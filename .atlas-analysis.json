@@ -1,0 +1,116 @@
+{
+  "projectType": "framework",
+  "projectName": "Membrane",
+  "projectDescription": "A selective learning and memory substrate for agentic systems with typed, revisable, decayable memory and trust-aware retrieval.",
+  "theme": "aspen",
+  "primaryColor": "#9333EA",
+  "lightColor": "#A855F7",
+  "darkColor": "#7E22CE",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/memory-types",
+              "concepts/revision-operations",
+              "concepts/trust-and-sensitivity",
+              "concepts/decay-and-consolidation"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/go-library",
+              "guides/running-daemon",
+              "guides/typescript-client",
+              "guides/python-client",
+              "guides/llm-integration",
+              "guides/configuration",
+              "guides/security"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/competence-learning",
+              "advanced/plan-graphs",
+              "advanced/observability",
+              "advanced/evaluation"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "gRPC Service",
+            "pages": [
+              "api/overview",
+              "api/ingestion",
+              "api/retrieval",
+              "api/revision",
+              "api/metrics"
+            ]
+          },
+          {
+            "group": "Go Package",
+            "pages": [
+              "api/go/membrane",
+              "api/go/schema",
+              "api/go/ingestion",
+              "api/go/retrieval",
+              "api/go/revision"
+            ]
+          },
+          {
+            "group": "Client SDKs",
+            "pages": [
+              "api/typescript",
+              "api/python"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Typed memory with explicit schemas for episodic, working, semantic, competence, and plan graph records",
+    "Revisable knowledge with supersede, fork, retract, merge, and contest operations",
+    "Competence learning that captures procedures and success rates",
+    "Time-based salience decay with automatic consolidation",
+    "Trust-aware retrieval with graduated access control",
+    "SQLCipher encryption at rest with TLS and API key authentication",
+    "Built-in observability metrics for retrieval usefulness and memory growth",
+    "gRPC API with TypeScript and Python client SDKs"
+  ],
+  "publicApiSurface": [
+    "IngestEvent - Create episodic record from an event",
+    "IngestToolOutput - Create episodic record from tool invocation",
+    "IngestObservation - Create semantic record from observation",
+    "IngestOutcome - Update episodic record with outcome data",
+    "IngestWorkingState - Create working memory record",
+    "Retrieve - Layered retrieval with trust context",
+    "RetrieveByID - Fetch single record by ID",
+    "Supersede - Replace record with new version",
+    "Fork - Create conditional variant of record",
+    "Retract - Mark record as retracted",
+    "Merge - Combine multiple records into one",
+    "Contest - Mark record as contested by conflicting evidence",
+    "Reinforce - Boost record salience",
+    "Penalize - Reduce record salience",
+    "GetMetrics - Retrieve observability metrics snapshot"
+  ]
+}
