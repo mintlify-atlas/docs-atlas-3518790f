@@ -1,0 +1,460 @@
+---
+title: Revision
+description: Operations for revising memory records
+---
+
+## Overview
+
+The `revision` package provides atomic operations for modifying memory records. All operations maintain full audit trails and enforce immutability constraints (episodic records cannot be revised).
+
+## Key Principles
+
+- **Atomic Operations** - Partial revisions are never externally visible (RFC 15.7)
+- **Immutable Episodic** - Episodic memory is append-only and cannot be revised (RFC Section 5)
+- **Full Audit Trails** - Every revision is traceable to evidence (RFC 15A.8)
+- **Evidence Required** - Semantic revisions must include evidence references
+
+## Supersede
+
+Atomically replaces an old record with a new one. The old record is retracted (salience set to 0, semantic status set to "retracted"), and the new record is linked to the old via provenance and a "supersedes" relation.
+
+```go
+func (s *Service) Supersede(
+    ctx context.Context,
+    oldID string,
+    newRec *schema.MemoryRecord,
+    actor string,
+    rationale string,
+) (*schema.MemoryRecord, error)
+```
+
+**Parameters:**
+- `ctx` - Context for the operation
+- `oldID` - ID of the record to supersede
+- `newRec` - New record that replaces the old one
+- `actor` - Identifier of who/what is performing the operation
+- `rationale` - Explanation for the revision
+
+**Returns:**
+- `*schema.MemoryRecord` - The newly created record
+- `error` - Error if the operation fails
+
+**Constraints:**
+- Old record must not be episodic
+- Old record must exist
+- New semantic records must include evidence
+
+### Example
+
+```go
+// Create new version of a semantic fact
+newRec := schema.NewMemoryRecord(
+    "",  // ID will be generated
+    schema.MemoryTypeSemantic,
+    schema.SensitivityLow,
+    &schema.SemanticPayload{
+        Kind:      "semantic",
+        Subject:   "user",
+        Predicate: "prefers_language",
+        Object:    "rust",  // Updated from "go"
+        Validity: schema.Validity{
+            Mode: schema.ValidityModeGlobal,
+        },
+        Evidence: []schema.ProvenanceRef{
+            {
+                SourceType: "observation",
+                SourceID:   "recent-project",
+                Timestamp:  time.Now(),
+            },
+        },
+    },
+)
+
+superseded, err := m.Supersede(
+    ctx,
+    oldRecordID,
+    newRec,
+    "agent",
+    "User switched to Rust for new projects",
+)
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Created new record %s, superseding %s\n", superseded.ID, oldRecordID)
+```
+
+## Fork
+
+Creates a new record derived from an existing source record. Unlike Supersede, both the source and the forked record remain active. This is intended for conditional variants, not replacement.
+
+```go
+func (s *Service) Fork(
+    ctx context.Context,
+    sourceID string,
+    forkedRec *schema.MemoryRecord,
+    actor string,
+    rationale string,
+) (*schema.MemoryRecord, error)
+```
+
+**Parameters:**
+- `ctx` - Context for the operation
+- `sourceID` - ID of the source record to fork from
+- `forkedRec` - New forked record
+- `actor` - Identifier of who/what is performing the operation
+- `rationale` - Explanation for the fork
+
+**Returns:**
+- `*schema.MemoryRecord` - The newly created forked record
+- `error` - Error if the operation fails
+
+**Constraints:**
+- Source record must not be episodic
+- Source record must exist
+- Forked semantic records must include evidence
+
+### Example
+
+```go
+// Create a conditional variant of a semantic fact
+forkedRec := schema.NewMemoryRecord(
+    "",
+    schema.MemoryTypeSemantic,
+    schema.SensitivityLow,
+    &schema.SemanticPayload{
+        Kind:      "semantic",
+        Subject:   "deployment",
+        Predicate: "requires_approval",
+        Object:    false,  // Different for dev environment
+        Validity: schema.Validity{
+            Mode: schema.ValidityModeConditional,
+            Conditions: map[string]any{
+                "environment": "development",
+            },
+        },
+    },
+)
+
+forked, err := m.Fork(
+    ctx,
+    productionRuleID,
+    forkedRec,
+    "agent",
+    "Development environment has different approval requirements",
+)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Retract
+
+Marks a record as retracted without deleting it, preserving auditability. For semantic records, the revision status is set to "retracted". Salience is set to 0 for all record types.
+
+```go
+func (s *Service) Retract(
+    ctx context.Context,
+    id string,
+    actor string,
+    rationale string,
+) error
+```
+
+**Parameters:**
+- `ctx` - Context for the operation
+- `id` - ID of the record to retract
+- `actor` - Identifier of who/what is performing the operation
+- `rationale` - Explanation for the retraction
+
+**Returns:**
+- `error` - Error if the operation fails
+
+**Constraints:**
+- Record must not be episodic
+- Record must exist
+
+### Example
+
+```go
+err := m.Retract(
+    ctx,
+    outdatedRecordID,
+    "agent",
+    "Information no longer accurate after system upgrade",
+)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Merge
+
+Atomically combines multiple source records into a single merged record. All source records are retracted (salience set to 0, semantic status set to "retracted"), and the merged record is linked to each source via "derived_from" relations.
+
+```go
+func (s *Service) Merge(
+    ctx context.Context,
+    recordIDs []string,
+    mergedRec *schema.MemoryRecord,
+    actor string,
+    rationale string,
+) (*schema.MemoryRecord, error)
+```
+
+**Parameters:**
+- `ctx` - Context for the operation
+- `recordIDs` - IDs of the records to merge
+- `mergedRec` - New merged record
+- `actor` - Identifier of who/what is performing the operation
+- `rationale` - Explanation for the merge
+
+**Returns:**
+- `*schema.MemoryRecord` - The newly created merged record
+- `error` - Error if the operation fails
+
+**Constraints:**
+- At least one source record ID must be provided
+- Source records must not be episodic
+- All source records must exist
+- Merged semantic records must include evidence
+
+### Example
+
+```go
+// Merge duplicate observations into a consolidated fact
+mergedRec := schema.NewMemoryRecord(
+    "",
+    schema.MemoryTypeSemantic,
+    schema.SensitivityLow,
+    &schema.SemanticPayload{
+        Kind:      "semantic",
+        Subject:   "project",
+        Predicate: "tech_stack",
+        Object:    []string{"go", "postgres", "react"},
+        Validity: schema.Validity{
+            Mode: schema.ValidityModeGlobal,
+        },
+        Evidence: []schema.ProvenanceRef{
+            {
+                SourceType: "consolidation",
+                SourceID:   "merge-operation",
+                Timestamp:  time.Now(),
+            },
+        },
+    },
+)
+
+merged, err := m.Merge(
+    ctx,
+    []string{record1ID, record2ID, record3ID},
+    mergedRec,
+    "consolidation-service",
+    "Consolidating duplicate tech stack observations",
+)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Contest
+
+Marks a record as contested, indicating conflicting evidence exists. The contestingRef identifies the conflicting record or evidence.
+
+```go
+func (s *Service) Contest(
+    ctx context.Context,
+    id string,
+    contestingRef string,
+    actor string,
+    rationale string,
+) error
+```
+
+**Parameters:**
+- `ctx` - Context for the operation
+- `id` - ID of the record to mark as contested
+- `contestingRef` - ID of the conflicting record or evidence
+- `actor` - Identifier of who/what is performing the operation
+- `rationale` - Explanation for the contestation
+
+**Returns:**
+- `error` - Error if the operation fails
+
+**Constraints:**
+- Record must not be episodic
+- Record must exist
+
+### Example
+
+```go
+err := m.Contest(
+    ctx,
+    originalRecordID,
+    conflictingRecordID,
+    "agent",
+    "New evidence contradicts previous conclusion",
+)
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Complete Revision Example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/GustyCube/membrane/pkg/membrane"
+    "github.com/GustyCube/membrane/pkg/schema"
+)
+
+func main() {
+    cfg := membrane.DefaultConfig()
+    m, _ := membrane.New(cfg)
+    defer m.Stop()
+
+    ctx := context.Background()
+    m.Start(ctx)
+
+    // 1. Create initial semantic record
+    initialRec := schema.NewMemoryRecord(
+        "fact-001",
+        schema.MemoryTypeSemantic,
+        schema.SensitivityLow,
+        &schema.SemanticPayload{
+            Kind:      "semantic",
+            Subject:   "api",
+            Predicate: "rate_limit",
+            Object:    100,
+            Validity: schema.Validity{
+                Mode: schema.ValidityModeGlobal,
+            },
+        },
+    )
+
+    // 2. Later, supersede with updated information
+    updatedRec := schema.NewMemoryRecord(
+        "",
+        schema.MemoryTypeSemantic,
+        schema.SensitivityLow,
+        &schema.SemanticPayload{
+            Kind:      "semantic",
+            Subject:   "api",
+            Predicate: "rate_limit",
+            Object:    200,  // Increased limit
+            Validity: schema.Validity{
+                Mode: schema.ValidityModeGlobal,
+            },
+            Evidence: []schema.ProvenanceRef{
+                {
+                    SourceType: "configuration",
+                    SourceID:   "api-config-v2",
+                    Timestamp:  time.Now(),
+                },
+            },
+        },
+    )
+
+    superseded, err := m.Supersede(
+        ctx,
+        "fact-001",
+        updatedRec,
+        "ops-team",
+        "Rate limit increased per policy update",
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 3. Create a conditional fork for dev environment
+    devRec := schema.NewMemoryRecord(
+        "",
+        schema.MemoryTypeSemantic,
+        schema.SensitivityLow,
+        &schema.SemanticPayload{
+            Kind:      "semantic",
+            Subject:   "api",
+            Predicate: "rate_limit",
+            Object:    1000,  // Higher for dev
+            Validity: schema.Validity{
+                Mode: schema.ValidityModeConditional,
+                Conditions: map[string]any{
+                    "environment": "development",
+                },
+            },
+        },
+    )
+
+    forked, err := m.Fork(
+        ctx,
+        superseded.ID,
+        devRec,
+        "ops-team",
+        "Development environment needs higher limit for testing",
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Original record: fact-001\n")
+    fmt.Printf("Superseded by: %s\n", superseded.ID)
+    fmt.Printf("Dev fork: %s\n", forked.ID)
+
+    // 4. Later, if conflicting evidence appears
+    err = m.Contest(
+        ctx,
+        superseded.ID,
+        "monitoring-alert-123",
+        "monitoring-system",
+        "Observed rate limit violations suggest actual limit is lower",
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // 5. Retract if completely invalid
+    err = m.Retract(
+        ctx,
+        "old-incorrect-fact",
+        "admin",
+        "This information was based on incorrect assumptions",
+    )
+    if err != nil {
+        log.Printf("Could not retract: %v\n", err)
+    }
+}
+```
+
+## Error Handling
+
+### ErrEpisodicImmutable
+
+Returned when attempting to revise an episodic record. Episodic memory is append-only and cannot be revised per RFC Section 5.
+
+```go
+var ErrEpisodicImmutable = errors.New("episodic memory is immutable and cannot be revised")
+```
+
+### ErrRecordNotFound
+
+Returned when a referenced record does not exist.
+
+```go
+var ErrRecordNotFound = storage.ErrNotFound
+```
+
+## Audit Trail
+
+All revision operations create audit entries with the following information:
+- **Action** - The type of revision (supersede, fork, retract, merge, contest)
+- **Actor** - Who or what performed the operation
+- **Timestamp** - When the operation occurred
+- **Rationale** - Why the operation was performed
+
+Audit entries are stored in both the modified record and any related records, ensuring complete traceability.

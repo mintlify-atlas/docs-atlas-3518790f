@@ -1,0 +1,299 @@
+---
+title: 'Metrics'
+description: 'Monitor Membrane system performance and statistics'
+---
+
+## Overview
+
+The metrics endpoint provides insights into the current state and performance of your Membrane instance. Use this to monitor system health, track memory growth, and understand usage patterns.
+
+## GetMetrics
+
+Retrieve current system metrics and statistics.
+
+### Request Parameters
+
+The `GetMetricsRequest` message has no parameters - simply call the endpoint to retrieve current metrics.
+
+### Response
+
+<ResponseField name="snapshot" type="bytes" required>
+  JSON-encoded metrics snapshot containing system statistics
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    req := &membranev1.GetMetricsRequest{}
+    
+    resp, err := client.GetMetrics(ctx, req)
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    // Parse the metrics snapshot
+    var snapshot MetricsSnapshot
+    err = json.Unmarshal(resp.Snapshot, &snapshot)
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    fmt.Printf("Total Records: %d\n", snapshot.TotalRecords)
+    fmt.Printf("Active Records: %d\n", snapshot.ActiveRecords)
+    fmt.Printf("Retracted Records: %d\n", snapshot.RetractedRecords)
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    import json
+    from membrane.v1 import membrane_pb2
+    
+    req = membrane_pb2.GetMetricsRequest()
+    resp = stub.GetMetrics(req)
+    
+    # Parse the metrics snapshot
+    snapshot = json.loads(resp.snapshot)
+    
+    print(f"Total Records: {snapshot['total_records']}")
+    print(f"Active Records: {snapshot['active_records']}")
+    print(f"Retracted Records: {snapshot['retracted_records']}")
+    ```
+  </Tab>
+  
+  <Tab title="TypeScript">
+    ```typescript
+    const req: GetMetricsRequest = {};
+    
+    client.getMetrics(req, (err, resp) => {
+      if (err) throw err;
+      
+      // Parse the metrics snapshot
+      const snapshot = JSON.parse(resp.snapshot.toString());
+      
+      console.log(`Total Records: ${snapshot.total_records}`);
+      console.log(`Active Records: ${snapshot.active_records}`);
+      console.log(`Retracted Records: ${snapshot.retracted_records}`);
+    });
+    ```
+  </Tab>
+</Tabs>
+
+## Metrics Snapshot Structure
+
+The `snapshot` field contains a JSON-encoded object with the following structure (note: actual fields may vary based on implementation):
+
+```json
+{
+  "total_records": 15420,
+  "active_records": 14890,
+  "retracted_records": 530,
+  "records_by_type": {
+    "event": 5234,
+    "observation": 6789,
+    "tool_output": 2145,
+    "outcome": 823,
+    "working_state": 429
+  },
+  "average_salience": 0.72,
+  "storage_bytes": 45678912,
+  "uptime_seconds": 86400,
+  "requests_total": 123456,
+  "requests_by_method": {
+    "IngestEvent": 5234,
+    "IngestObservation": 6789,
+    "Retrieve": 8942,
+    "RetrieveByID": 3421,
+    "Supersede": 234,
+    "Reinforce": 156
+  },
+  "last_ingestion_timestamp": "2026-03-13T14:30:00Z",
+  "last_retrieval_timestamp": "2026-03-13T14:35:22Z"
+}
+```
+
+### Common Metric Fields
+
+<ParamField path="total_records" type="int">
+  Total number of memory records in the system (including retracted)
+</ParamField>
+
+<ParamField path="active_records" type="int">
+  Number of active (non-retracted) memory records
+</ParamField>
+
+<ParamField path="retracted_records" type="int">
+  Number of retracted memory records
+</ParamField>
+
+<ParamField path="records_by_type" type="object">
+  Breakdown of records by memory type (event, observation, tool_output, etc.)
+</ParamField>
+
+<ParamField path="average_salience" type="float">
+  Average salience across all active records
+</ParamField>
+
+<ParamField path="storage_bytes" type="int">
+  Total storage used by memory records in bytes
+</ParamField>
+
+<ParamField path="uptime_seconds" type="int">
+  Server uptime in seconds
+</ParamField>
+
+<ParamField path="requests_total" type="int">
+  Total number of API requests processed
+</ParamField>
+
+<ParamField path="requests_by_method" type="object">
+  Breakdown of requests by method name
+</ParamField>
+
+## Use Cases
+
+### System Monitoring
+
+```go
+// Poll metrics every minute for monitoring
+ticker := time.NewTicker(1 * time.Minute)
+for range ticker.C {
+    resp, err := client.GetMetrics(ctx, &membranev1.GetMetricsRequest{})
+    if err != nil {
+        log.Printf("Failed to get metrics: %v", err)
+        continue
+    }
+    
+    var snapshot MetricsSnapshot
+    json.Unmarshal(resp.Snapshot, &snapshot)
+    
+    // Send to monitoring system
+    prometheus.GaugeVec.WithLabelValues("membrane", "total_records").Set(float64(snapshot.TotalRecords))
+    prometheus.GaugeVec.WithLabelValues("membrane", "average_salience").Set(snapshot.AverageSalience)
+}
+```
+
+### Health Checks
+
+```python
+import json
+
+def check_membrane_health():
+    req = membrane_pb2.GetMetricsRequest()
+    resp = stub.GetMetrics(req)
+    snapshot = json.loads(resp.snapshot)
+    
+    # Check if system is healthy
+    if snapshot['active_records'] == 0:
+        return False, "No active records"
+    
+    if snapshot['average_salience'] < 0.3:
+        return False, "Average salience too low"
+    
+    return True, "System healthy"
+```
+
+### Capacity Planning
+
+```typescript
+const req: GetMetricsRequest = {};
+
+client.getMetrics(req, (err, resp) => {
+  const snapshot = JSON.parse(resp.snapshot.toString());
+  
+  // Calculate storage growth rate
+  const storageGB = snapshot.storage_bytes / (1024 ** 3);
+  const recordsPerGB = snapshot.total_records / storageGB;
+  
+  console.log(`Storage: ${storageGB.toFixed(2)} GB`);
+  console.log(`Density: ${recordsPerGB.toFixed(0)} records/GB`);
+  
+  // Predict capacity needs
+  const projectedRecordsPerDay = snapshot.requests_by_method.IngestEvent * 1.5;
+  const daysUntilCapacity = (MAX_RECORDS - snapshot.total_records) / projectedRecordsPerDay;
+  
+  console.log(`Estimated days until capacity: ${daysUntilCapacity.toFixed(1)}`);
+});
+```
+
+### Performance Analysis
+
+```go
+// Compare metrics over time
+type MetricsComparison struct {
+    Before MetricsSnapshot
+    After  MetricsSnapshot
+}
+
+func analyzePerformance(before, after MetricsSnapshot) {
+    recordGrowth := after.TotalRecords - before.TotalRecords
+    requestGrowth := after.RequestsTotal - before.RequestsTotal
+    
+    fmt.Printf("Record Growth: %d\n", recordGrowth)
+    fmt.Printf("Request Growth: %d\n", requestGrowth)
+    fmt.Printf("Salience Change: %.2f\n", after.AverageSalience - before.AverageSalience)
+    
+    // Calculate retrieval ratio
+    retrievals := after.RequestsByMethod["Retrieve"] + after.RequestsByMethod["RetrieveByID"]
+    ingestions := after.RequestsByMethod["IngestEvent"] + after.RequestsByMethod["IngestObservation"]
+    ratio := float64(retrievals) / float64(ingestions)
+    
+    fmt.Printf("Retrieval/Ingestion Ratio: %.2f\n", ratio)
+}
+```
+
+## Best Practices
+
+1. **Regular Polling**: Poll metrics at regular intervals (e.g., every 1-5 minutes) for monitoring
+2. **Alert Thresholds**: Set up alerts for abnormal values (e.g., too many retracted records, low average salience)
+3. **Trend Analysis**: Track metrics over time to identify growth patterns and potential issues
+4. **Integration**: Export metrics to your monitoring infrastructure (Prometheus, Grafana, Datadog, etc.)
+5. **Correlation**: Correlate Membrane metrics with application-level metrics to understand impact
+
+## Metric Interpretation
+
+### High Retraction Rate
+
+If `retracted_records / total_records > 0.2` (more than 20% retracted):
+- May indicate data quality issues
+- Could suggest aggressive retraction policies
+- Might reveal conflicting agents
+
+### Low Average Salience
+
+If `average_salience < 0.4`:
+- Records may be decaying too quickly
+- Could indicate lack of reinforcement
+- Might suggest need to adjust decay parameters
+
+### Unbalanced Request Types
+
+If ingestion requests greatly outnumber retrievals:
+- System may be collecting data without using it
+- Consider implementing more retrieval-based features
+
+If retrievals greatly outnumber ingestions:
+- May indicate heavy reliance on historical data
+- Could suggest need for fresher information
+
+## Error Handling
+
+The `GetMetrics` endpoint typically succeeds unless there's a server error. Handle errors gracefully:
+
+```go
+resp, err := client.GetMetrics(ctx, &membranev1.GetMetricsRequest{})
+if err != nil {
+    log.Printf("Failed to retrieve metrics: %v", err)
+    // Fall back to cached metrics or default values
+    return cachedMetrics, nil
+}
+```
+
+## Rate Limiting
+
+While metrics are lightweight, avoid excessive polling:
+- Recommended: 1-5 minute intervals
+- Maximum: Once per 10 seconds
+- Use exponential backoff if errors occur

@@ -1,0 +1,142 @@
+---
+title: 'API Overview'
+description: 'Overview of the Membrane gRPC API'
+---
+
+## Introduction
+
+The Membrane API is a gRPC service that provides a comprehensive interface for managing agentic memory systems. The API consists of 15 methods organized into four functional categories:
+
+- **Ingestion**: Store different types of memory records
+- **Retrieval**: Query and fetch memory records
+- **Revision**: Modify and manage existing records
+- **Metrics**: Monitor system performance and statistics
+
+## Service Definition
+
+The complete service is defined in the `MembraneService`:
+
+```protobuf
+service MembraneService {
+    rpc IngestEvent(IngestEventRequest) returns (IngestResponse);
+    rpc IngestToolOutput(IngestToolOutputRequest) returns (IngestResponse);
+    rpc IngestObservation(IngestObservationRequest) returns (IngestResponse);
+    rpc IngestOutcome(IngestOutcomeRequest) returns (IngestResponse);
+    rpc IngestWorkingState(IngestWorkingStateRequest) returns (IngestResponse);
+    rpc Retrieve(RetrieveRequest) returns (RetrieveResponse);
+    rpc RetrieveByID(RetrieveByIDRequest) returns (MemoryRecordResponse);
+    rpc Supersede(SupersedeRequest) returns (MemoryRecordResponse);
+    rpc Fork(ForkRequest) returns (MemoryRecordResponse);
+    rpc Retract(RetractRequest) returns (RetractResponse);
+    rpc Merge(MergeRequest) returns (MemoryRecordResponse);
+    rpc Reinforce(ReinforceRequest) returns (ReinforceResponse);
+    rpc Penalize(PenalizeRequest) returns (PenalizeResponse);
+    rpc GetMetrics(GetMetricsRequest) returns (MetricsResponse);
+    rpc Contest(ContestRequest) returns (ContestResponse);
+}
+```
+
+## Connection Setup
+
+### Go Client
+
+```go
+import (
+    "google.golang.org/grpc"
+    "google.golang.org/grpc/credentials/insecure"
+    membranev1 "github.com/GustyCube/membrane/api/grpc/gen/membranev1"
+)
+
+conn, err := grpc.Dial("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+if err != nil {
+    log.Fatalf("failed to connect: %v", err)
+}
+defer conn.Close()
+
+client := membranev1.NewMembraneServiceClient(conn)
+```
+
+### Python Client
+
+```python
+import grpc
+from membrane.v1 import membrane_pb2_grpc
+
+channel = grpc.insecure_channel('localhost:50051')
+stub = membrane_pb2_grpc.MembraneServiceStub(channel)
+```
+
+### TypeScript Client
+
+```typescript
+import * as grpc from '@grpc/grpc-js';
+import { MembraneServiceClient } from './gen/membrane/v1/membrane';
+
+const client = new MembraneServiceClient(
+  'localhost:50051',
+  grpc.credentials.createInsecure()
+);
+```
+
+## Method Categories
+
+### Ingestion Methods
+
+Store different types of memory records into the system:
+
+- `IngestEvent` - Record significant events
+- `IngestToolOutput` - Store tool execution results
+- `IngestObservation` - Record subject-predicate-object triples
+- `IngestOutcome` - Track outcomes of actions
+- `IngestWorkingState` - Persist agent working state
+
+[Learn more about ingestion methods →](/api/ingestion)
+
+### Retrieval Methods
+
+Query and fetch memory records:
+
+- `Retrieve` - Semantic search with trust context
+- `RetrieveByID` - Fetch specific records by ID
+
+[Learn more about retrieval methods →](/api/retrieval)
+
+### Revision Methods
+
+Modify and manage the lifecycle of memory records:
+
+- `Supersede` - Replace an old record with a new version
+- `Fork` - Create a variant of an existing record
+- `Retract` - Mark a record as retracted
+- `Merge` - Combine multiple records into one
+- `Contest` - Challenge the validity of a record
+- `Reinforce` - Strengthen a record's salience
+- `Penalize` - Reduce a record's salience
+
+[Learn more about revision methods →](/api/revision)
+
+### Metrics Methods
+
+Monitor system health and performance:
+
+- `GetMetrics` - Retrieve current system metrics
+
+[Learn more about metrics →](/api/metrics)
+
+## Package Information
+
+- **Package**: `membrane.v1`
+- **Go Package**: `github.com/GustyCube/membrane/api/grpc/gen/membranev1`
+- **Proto Syntax**: `proto3`
+
+## Error Handling
+
+All gRPC methods return standard gRPC status codes. Common error codes include:
+
+- `OK` (0): Success
+- `INVALID_ARGUMENT` (3): Invalid request parameters
+- `NOT_FOUND` (5): Record not found
+- `PERMISSION_DENIED` (7): Trust context insufficient
+- `INTERNAL` (13): Server-side error
+
+Always check the status code and handle errors appropriately in your client code.

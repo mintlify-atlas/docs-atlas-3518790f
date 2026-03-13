@@ -1,0 +1,346 @@
+---
+title: Running the Daemon
+description: Deploy and operate membraned in production
+---
+
+The `membraned` daemon provides a gRPC API for remote access to the Membrane memory substrate. This guide covers installation, configuration, and operational best practices.
+
+## Prerequisites
+
+- Go 1.22 or later
+- Make
+- Protocol Buffers compiler (`protoc` >= 3.20) for development
+
+## Building from Source
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/GustyCube/membrane.git
+    cd membrane
+    ```
+  </Step>
+
+  <Step title="Build the daemon">
+    ```bash
+    make build
+    ```
+
+    This creates `./bin/membraned`.
+  </Step>
+
+  <Step title="Run tests (optional)">
+    ```bash
+    make test
+    ```
+  </Step>
+</Steps>
+
+## Starting the Daemon
+
+### Default Configuration
+
+Start with SQLite storage and default settings:
+
+```bash
+./bin/membraned
+```
+
+This launches the daemon on `:9090` with:
+- Database: `membrane.db` (created if missing)
+- Decay interval: 1 hour
+- Consolidation interval: 6 hours
+- No encryption or authentication
+
+### Custom Database Path
+
+Override the database location:
+
+```bash
+./bin/membraned --db /path/to/membrane.db
+```
+
+### Custom Listen Address
+
+Change the gRPC listen address:
+
+```bash
+./bin/membraned --addr :8080
+```
+
+### Using a Configuration File
+
+Provide a YAML config file:
+
+```bash
+./bin/membraned --config /path/to/config.yaml
+```
+
+See the [Configuration Guide](/guides/configuration) for all available options.
+
+## Command-Line Flags
+
+| Flag | Description | Example |
+|------|-------------|---------|
+| `--config` | Path to YAML config file | `--config /etc/membrane/config.yaml` |
+| `--db` | SQLite database path (overrides config) | `--db /var/lib/membrane.db` |
+| `--addr` | gRPC listen address (overrides config) | `--addr :8080` |
+| `--version` | Print version and exit | `--version` |
+
+## Configuration Precedence
+
+1. **Command-line flags** (highest priority)
+2. **Environment variables** (for secrets)
+3. **YAML config file**
+4. **Default values** (lowest priority)
+
+### Example with Overrides
+
+```bash
+# Config file sets listen_addr: ":9090"
+# Flag overrides it to :8080
+./bin/membraned --config config.yaml --addr :8080
+```
+
+## Environment Variables
+
+<Warning>
+  Store encryption keys and API keys in environment variables, not in config files.
+</Warning>
+
+| Variable | Purpose |
+|----------|----------|
+| `MEMBRANE_ENCRYPTION_KEY` | SQLCipher encryption key for database at rest |
+| `MEMBRANE_API_KEY` | Bearer token for gRPC client authentication |
+
+### Example
+
+```bash
+export MEMBRANE_ENCRYPTION_KEY="your-32-char-encryption-key-here"
+export MEMBRANE_API_KEY="your-secret-api-key"
+./bin/membraned --config config.yaml
+```
+
+## Graceful Shutdown
+
+The daemon handles `SIGINT` and `SIGTERM` signals gracefully:
+
+1. Cancel background schedulers (decay, consolidation)
+2. Drain in-flight gRPC requests
+3. Close the database cleanly
+
+```bash
+# Send SIGTERM
+kill -TERM <pid>
+
+# Or SIGINT (Ctrl+C)
+^C
+```
+
+Expected log output:
+
+```
+membraned: received signal interrupt, shutting down
+membraned: shutdown complete
+```
+
+## Process Management
+
+### systemd Service
+
+Create `/etc/systemd/system/membraned.service`:
+
+```ini
+[Unit]
+Description=Membrane Memory Substrate
+After=network.target
+
+[Service]
+Type=simple
+User=membrane
+Group=membrane
+WorkingDirectory=/var/lib/membrane
+EnvironmentFile=/etc/membrane/environment
+ExecStart=/usr/local/bin/membraned --config /etc/membrane/config.yaml
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Environment file `/etc/membrane/environment`:
+
+```bash
+MEMBRANE_ENCRYPTION_KEY=your-encryption-key
+MEMBRANE_API_KEY=your-api-key
+```
+
+Enable and start:
+
+```bash
+sudo systemctl enable membraned
+sudo systemctl start membraned
+sudo systemctl status membraned
+```
+
+### Docker
+
+```dockerfile
+FROM golang:1.22-alpine AS builder
+WORKDIR /build
+COPY . .
+RUN go build -o membraned ./cmd/membraned
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates
+WORKDIR /app
+COPY --from=builder /build/membraned .
+EXPOSE 9090
+CMD ["./membraned"]
+```
+
+Build and run:
+
+```bash
+docker build -t membraned .
+docker run -d \
+  -p 9090:9090 \
+  -v /path/to/data:/data \
+  -e MEMBRANE_ENCRYPTION_KEY="your-key" \
+  -e MEMBRANE_API_KEY="your-api-key" \
+  membraned --db /data/membrane.db
+```
+
+## Monitoring
+
+### Health Check
+
+Use the `GetMetrics` gRPC endpoint for liveness checks:
+
+```bash
+grpcurl -plaintext localhost:9090 membrane.v1.MembraneService/GetMetrics
+```
+
+### Logs
+
+The daemon logs to stdout/stderr. Key events include:
+
+- Startup: `membraned: listening on :9090`
+- Shutdown: `membraned: shutdown complete`
+- Errors: `membraned: grpc server error: ...`
+
+### Metrics
+
+Retrieve operational metrics via the gRPC API:
+
+```go
+metrics, err := client.GetMetrics()
+fmt.Printf("Total records: %d\n", metrics.TotalRecords)
+fmt.Printf("Memory growth rate: %.2f\n", metrics.MemoryGrowthRate)
+fmt.Printf("Retrieval usefulness: %.2f\n", metrics.RetrievalUsefulness)
+```
+
+See [Observability](/advanced/observability) for details.
+
+## Backup and Recovery
+
+### Backup
+
+The database is a single SQLite file. Use standard file backup:
+
+```bash
+# Stop the daemon first for clean backup
+sudo systemctl stop membraned
+cp /var/lib/membrane/membrane.db /backup/membrane-$(date +%Y%m%d).db
+sudo systemctl start membraned
+```
+
+For encrypted databases, back up the encrypted file and store the encryption key securely.
+
+### Online Backup (SQLite)
+
+Use SQLite's online backup API (requires custom tooling or `.backup` command via sqlite3 CLI):
+
+```bash
+sqlite3 /var/lib/membrane/membrane.db ".backup /backup/membrane.db"
+```
+
+### Recovery
+
+Restore from backup:
+
+```bash
+sudo systemctl stop membraned
+cp /backup/membrane-20260312.db /var/lib/membrane/membrane.db
+sudo systemctl start membraned
+```
+
+## Performance Tuning
+
+### Rate Limiting
+
+Adjust request rate limits in config:
+
+```yaml
+rate_limit_per_second: 200
+```
+
+### Background Job Intervals
+
+Tune decay and consolidation frequency:
+
+```yaml
+decay_interval: "30m"          # Run decay every 30 minutes
+consolidation_interval: "3h"   # Consolidate every 3 hours
+```
+
+### Database Location
+
+For performance, place the database on SSD storage:
+
+```bash
+./bin/membraned --db /mnt/nvme/membrane.db
+```
+
+## Troubleshooting
+
+### Port Already in Use
+
+```
+failed to create grpc server: listen tcp :9090: bind: address already in use
+```
+
+**Solution:** Change the listen address:
+
+```bash
+./bin/membraned --addr :9091
+```
+
+### Database Locked
+
+```
+failed to open store: database is locked
+```
+
+**Solution:** Ensure only one membraned process accesses the database. Check for stale processes:
+
+```bash
+ps aux | grep membraned
+kill <pid>
+```
+
+### Encryption Key Mismatch
+
+```
+failed to open store: file is not a database
+```
+
+**Solution:** Verify the encryption key matches the one used to create the database.
+
+## Next Steps
+
+- Review [Configuration Options](/guides/configuration)
+- Set up [Security Features](/guides/security)
+- Monitor with [Observability Tools](/advanced/observability)
+- Connect clients: [TypeScript](/guides/typescript-client) | [Python](/guides/python-client)

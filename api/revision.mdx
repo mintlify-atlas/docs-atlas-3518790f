@@ -1,0 +1,546 @@
+---
+title: 'Revision Methods'
+description: 'Modify and manage the lifecycle of memory records'
+---
+
+## Overview
+
+Revision methods allow you to modify, update, and manage the lifecycle of memory records. These methods support versioning, forking, merging, and salience adjustment.
+
+All revision operations require an `actor` (who is making the change) and a `rationale` (why the change is being made) for audit and provenance tracking.
+
+## Supersede
+
+Replace an old memory record with a new version, maintaining lineage.
+
+### Request Parameters
+
+<ParamField path="old_id" type="string" required>
+  ID of the record being superseded
+</ParamField>
+
+<ParamField path="new_record" type="bytes" required>
+  JSON-encoded MemoryRecord that replaces the old one
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor performing the supersede operation
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Explanation for why the record is being superseded
+</ParamField>
+
+### Response
+
+<ResponseField name="record" type="bytes" required>
+  JSON-encoded MemoryRecord representing the newly created version
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    newRecord := MemoryRecord{
+        Type:    "observation",
+        Content: map[string]interface{}{
+            "subject":   "user:jane",
+            "predicate": "role",
+            "object":    "senior_engineer",
+        },
+    }
+    newRecordBytes, _ := json.Marshal(newRecord)
+    
+    req := &membranev1.SupersedeRequest{
+        OldId:      "rec-old-123",
+        NewRecord:  newRecordBytes,
+        Actor:      "agent-1",
+        Rationale:  "User was promoted from engineer to senior engineer",
+    }
+    
+    resp, err := client.Supersede(ctx, req)
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    var updatedRecord MemoryRecord
+    json.Unmarshal(resp.Record, &updatedRecord)
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    import json
+    
+    new_record = {
+        "type": "observation",
+        "content": {
+            "subject": "user:jane",
+            "predicate": "role",
+            "object": "senior_engineer"
+        }
+    }
+    
+    req = membrane_pb2.SupersedeRequest(
+        old_id="rec-old-123",
+        new_record=json.dumps(new_record).encode(),
+        actor="agent-1",
+        rationale="User was promoted from engineer to senior engineer"
+    )
+    
+    resp = stub.Supersede(req)
+    updated_record = json.loads(resp.record)
+    ```
+  </Tab>
+</Tabs>
+
+### Use Cases
+
+- Updating user profile information
+- Correcting erroneous data
+- Reflecting state changes over time
+
+## Fork
+
+Create a variant of an existing record, maintaining reference to the source.
+
+### Request Parameters
+
+<ParamField path="source_id" type="string" required>
+  ID of the record being forked
+</ParamField>
+
+<ParamField path="forked_record" type="bytes" required>
+  JSON-encoded MemoryRecord representing the variant
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor performing the fork operation
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Explanation for creating the fork
+</ParamField>
+
+### Response
+
+<ResponseField name="record" type="bytes" required>
+  JSON-encoded MemoryRecord representing the newly forked record
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    forkedRecord := MemoryRecord{
+        Type:    "event",
+        Content: map[string]interface{}{
+            "kind":    "experiment",
+            "summary": "Alternative approach: Use cache-first strategy",
+        },
+    }
+    forkedRecordBytes, _ := json.Marshal(forkedRecord)
+    
+    req := &membranev1.ForkRequest{
+        SourceId:      "rec-original-456",
+        ForkedRecord:  forkedRecordBytes,
+        Actor:         "agent-2",
+        Rationale:     "Exploring alternative implementation strategy",
+    }
+    
+    resp, err := client.Fork(ctx, req)
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    forked_record = {
+        "type": "event",
+        "content": {
+            "kind": "experiment",
+            "summary": "Alternative approach: Use cache-first strategy"
+        }
+    }
+    
+    req = membrane_pb2.ForkRequest(
+        source_id="rec-original-456",
+        forked_record=json.dumps(forked_record).encode(),
+        actor="agent-2",
+        rationale="Exploring alternative implementation strategy"
+    )
+    
+    resp = stub.Fork(req)
+    ```
+  </Tab>
+</Tabs>
+
+### Use Cases
+
+- Creating experimental variants of decisions
+- Branching conversation contexts
+- A/B testing different approaches
+
+## Retract
+
+Mark a record as retracted, indicating it should no longer be considered valid.
+
+### Request Parameters
+
+<ParamField path="id" type="string" required>
+  ID of the record to retract
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor performing the retraction
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Explanation for retracting the record
+</ParamField>
+
+### Response
+
+Empty response indicating success.
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    req := &membranev1.RetractRequest{
+        Id:        "rec-error-789",
+        Actor:     "agent-1",
+        Rationale: "Record contained incorrect information based on outdated data",
+    }
+    
+    _, err := client.Retract(ctx, req)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Record successfully retracted")
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    req = membrane_pb2.RetractRequest(
+        id="rec-error-789",
+        actor="agent-1",
+        rationale="Record contained incorrect information based on outdated data"
+    )
+    
+    stub.Retract(req)
+    print("Record successfully retracted")
+    ```
+  </Tab>
+</Tabs>
+
+### Use Cases
+
+- Removing incorrect or outdated information
+- Handling privacy requests (e.g., user data deletion)
+- Invalidating failed experiments
+
+## Merge
+
+Combine multiple memory records into a single consolidated record.
+
+### Request Parameters
+
+<ParamField path="ids" type="string[]" required>
+  Array of record IDs to merge
+</ParamField>
+
+<ParamField path="merged_record" type="bytes" required>
+  JSON-encoded MemoryRecord representing the merged result
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor performing the merge
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Explanation for merging the records
+</ParamField>
+
+### Response
+
+<ResponseField name="record" type="bytes" required>
+  JSON-encoded MemoryRecord representing the merged record
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    mergedRecord := MemoryRecord{
+        Type:    "observation",
+        Content: map[string]interface{}{
+            "subject":   "user:alex",
+            "predicate": "skills",
+            "object":    []string{"golang", "python", "rust"},
+        },
+    }
+    mergedRecordBytes, _ := json.Marshal(mergedRecord)
+    
+    req := &membranev1.MergeRequest{
+        Ids:           []string{"rec-skill-1", "rec-skill-2", "rec-skill-3"},
+        MergedRecord:  mergedRecordBytes,
+        Actor:         "agent-1",
+        Rationale:     "Consolidating multiple skill observations into single record",
+    }
+    
+    resp, err := client.Merge(ctx, req)
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    merged_record = {
+        "type": "observation",
+        "content": {
+            "subject": "user:alex",
+            "predicate": "skills",
+            "object": ["golang", "python", "rust"]
+        }
+    }
+    
+    req = membrane_pb2.MergeRequest(
+        ids=["rec-skill-1", "rec-skill-2", "rec-skill-3"],
+        merged_record=json.dumps(merged_record).encode(),
+        actor="agent-1",
+        rationale="Consolidating multiple skill observations into single record"
+    )
+    
+    resp = stub.Merge(req)
+    ```
+  </Tab>
+</Tabs>
+
+### Use Cases
+
+- Deduplicating similar records
+- Consolidating incremental updates
+- Combining partial observations
+
+## Contest
+
+Challenge the validity or accuracy of a memory record.
+
+### Request Parameters
+
+<ParamField path="id" type="string" required>
+  ID of the record being contested
+</ParamField>
+
+<ParamField path="contesting_ref" type="string" required>
+  Reference or ID of evidence supporting the contestation
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor contesting the record
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Explanation for contesting the record
+</ParamField>
+
+### Response
+
+Empty response indicating the contestation was recorded.
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    req := &membranev1.ContestRequest{
+        Id:             "rec-claim-999",
+        ContestingRef:  "rec-evidence-888",
+        Actor:          "agent-3",
+        Rationale:      "New evidence contradicts this claim",
+    }
+    
+    _, err := client.Contest(ctx, req)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Record contested successfully")
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    req = membrane_pb2.ContestRequest(
+        id="rec-claim-999",
+        contesting_ref="rec-evidence-888",
+        actor="agent-3",
+        rationale="New evidence contradicts this claim"
+    )
+    
+    stub.Contest(req)
+    print("Record contested successfully")
+    ```
+  </Tab>
+</Tabs>
+
+### Use Cases
+
+- Marking disputed or controversial information
+- Recording conflicting observations
+- Enabling multi-agent debate and verification
+
+## Reinforce
+
+Increase the salience of a memory record, making it more likely to be retrieved.
+
+### Request Parameters
+
+<ParamField path="id" type="string" required>
+  ID of the record to reinforce
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor reinforcing the record
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Explanation for reinforcing the record
+</ParamField>
+
+### Response
+
+Empty response indicating success.
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    req := &membranev1.ReinforceRequest{
+        Id:        "rec-important-111",
+        Actor:     "agent-1",
+        Rationale: "This information was critical to solving the task",
+    }
+    
+    _, err := client.Reinforce(ctx, req)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Record reinforced")
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    req = membrane_pb2.ReinforceRequest(
+        id="rec-important-111",
+        actor="agent-1",
+        rationale="This information was critical to solving the task"
+    )
+    
+    stub.Reinforce(req)
+    print("Record reinforced")
+    ```
+  </Tab>
+</Tabs>
+
+### Use Cases
+
+- Marking frequently accessed information
+- Highlighting important decisions or learnings
+- Preventing decay of critical memories
+
+## Penalize
+
+Decrease the salience of a memory record, making it less likely to be retrieved.
+
+### Request Parameters
+
+<ParamField path="id" type="string" required>
+  ID of the record to penalize
+</ParamField>
+
+<ParamField path="amount" type="double" required>
+  Amount to reduce salience by (positive value)
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor penalizing the record
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Explanation for penalizing the record
+</ParamField>
+
+### Response
+
+Empty response indicating success.
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    req := &membranev1.PenalizeRequest{
+        Id:        "rec-misleading-222",
+        Amount:    0.3,
+        Actor:     "agent-1",
+        Rationale: "Information led to suboptimal decision",
+    }
+    
+    _, err := client.Penalize(ctx, req)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println("Record penalized")
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    req = membrane_pb2.PenalizeRequest(
+        id="rec-misleading-222",
+        amount=0.3,
+        actor="agent-1",
+        rationale="Information led to suboptimal decision"
+    )
+    
+    stub.Penalize(req)
+    print("Record penalized")
+    ```
+  </Tab>
+</Tabs>
+
+### Use Cases
+
+- Downranking outdated information
+- Reducing impact of misleading data
+- Implementing learning from negative feedback
+
+## Provenance and Audit Trail
+
+All revision operations maintain a complete audit trail:
+
+- **Actor**: Who made the change
+- **Rationale**: Why the change was made
+- **Timestamp**: When the change occurred
+- **Operation**: What type of revision was performed
+
+This enables:
+- Debugging memory behavior
+- Understanding decision lineage
+- Compliance and accountability
+- Multi-agent coordination
+
+## Best Practices
+
+1. **Always provide meaningful rationales**: This helps with debugging and understanding system behavior
+2. **Use supersede for corrections**: Maintains lineage while updating information
+3. **Use fork for experiments**: Allows trying alternatives without losing original
+4. **Reinforce successful patterns**: Help the system learn what information is valuable
+5. **Contest rather than retract when uncertain**: Allows for multiple perspectives
+6. **Track actor IDs consistently**: Enables per-agent or per-user analysis

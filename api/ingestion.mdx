@@ -1,0 +1,495 @@
+---
+title: 'Ingestion Methods'
+description: 'Store different types of memory records into Membrane'
+---
+
+## Overview
+
+Ingestion methods allow you to store different types of memory records into the Membrane system. All ingestion methods return an `IngestResponse` containing the created memory record.
+
+## IngestEvent
+
+Record significant events that occur in your system.
+
+### Request Parameters
+
+<ParamField path="source" type="string" required>
+  Identifier of the system or agent creating the event
+</ParamField>
+
+<ParamField path="event_kind" type="string" required>
+  Type or category of the event
+</ParamField>
+
+<ParamField path="ref" type="string" required>
+  Reference or identifier for the event
+</ParamField>
+
+<ParamField path="summary" type="string" required>
+  Human-readable description of the event
+</ParamField>
+
+<ParamField path="timestamp" type="string" required>
+  RFC 3339 formatted timestamp
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Array of tags for categorization
+</ParamField>
+
+<ParamField path="scope" type="string">
+  Visibility scope for the event
+</ParamField>
+
+<ParamField path="sensitivity" type="string">
+  Sensitivity level (e.g., "public", "private", "confidential")
+</ParamField>
+
+### Response
+
+<ResponseField name="record" type="bytes" required>
+  JSON-encoded MemoryRecord containing the stored event
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    req := &membranev1.IngestEventRequest{
+        Source:      "agent-1",
+        EventKind:   "user_action",
+        Ref:         "action-123",
+        Summary:     "User completed onboarding",
+        Timestamp:   time.Now().Format(time.RFC3339),
+        Tags:        []string{"onboarding", "milestone"},
+        Scope:       "team",
+        Sensitivity: "internal",
+    }
+    
+    resp, err := client.IngestEvent(ctx, req)
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    // Parse the memory record
+    var record MemoryRecord
+    json.Unmarshal(resp.Record, &record)
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    import json
+    from datetime import datetime
+    from membrane.v1 import membrane_pb2
+    
+    req = membrane_pb2.IngestEventRequest(
+        source="agent-1",
+        event_kind="user_action",
+        ref="action-123",
+        summary="User completed onboarding",
+        timestamp=datetime.now().isoformat(),
+        tags=["onboarding", "milestone"],
+        scope="team",
+        sensitivity="internal"
+    )
+    
+    resp = stub.IngestEvent(req)
+    record = json.loads(resp.record)
+    ```
+  </Tab>
+  
+  <Tab title="TypeScript">
+    ```typescript
+    const req: IngestEventRequest = {
+      source: 'agent-1',
+      eventKind: 'user_action',
+      ref: 'action-123',
+      summary: 'User completed onboarding',
+      timestamp: new Date().toISOString(),
+      tags: ['onboarding', 'milestone'],
+      scope: 'team',
+      sensitivity: 'internal',
+    };
+    
+    client.ingestEvent(req, (err, resp) => {
+      if (err) throw err;
+      const record = JSON.parse(resp.record.toString());
+    });
+    ```
+  </Tab>
+</Tabs>
+
+## IngestToolOutput
+
+Store the results of tool executions, including arguments and dependencies.
+
+### Request Parameters
+
+<ParamField path="source" type="string" required>
+  Identifier of the agent or system executing the tool
+</ParamField>
+
+<ParamField path="tool_name" type="string" required>
+  Name of the tool that was executed
+</ParamField>
+
+<ParamField path="args" type="bytes" required>
+  JSON-encoded map of tool arguments
+</ParamField>
+
+<ParamField path="result" type="bytes" required>
+  JSON-encoded result value from the tool
+</ParamField>
+
+<ParamField path="depends_on" type="string[]">
+  Array of record IDs this tool output depends on
+</ParamField>
+
+<ParamField path="timestamp" type="string" required>
+  RFC 3339 formatted timestamp
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Array of tags for categorization
+</ParamField>
+
+<ParamField path="scope" type="string">
+  Visibility scope
+</ParamField>
+
+<ParamField path="sensitivity" type="string">
+  Sensitivity level
+</ParamField>
+
+### Response
+
+<ResponseField name="record" type="bytes" required>
+  JSON-encoded MemoryRecord containing the stored tool output
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    args, _ := json.Marshal(map[string]interface{}{
+        "query": "weather in London",
+        "units": "celsius",
+    })
+    
+    result, _ := json.Marshal(map[string]interface{}{
+        "temperature": 15,
+        "condition": "cloudy",
+    })
+    
+    req := &membranev1.IngestToolOutputRequest{
+        Source:    "agent-1",
+        ToolName:  "weather_api",
+        Args:      args,
+        Result:    result,
+        DependsOn: []string{"rec-456"},
+        Timestamp: time.Now().Format(time.RFC3339),
+        Tags:      []string{"tool", "api_call"},
+    }
+    
+    resp, err := client.IngestToolOutput(ctx, req)
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    import json
+    from datetime import datetime
+    
+    args = json.dumps({"query": "weather in London", "units": "celsius"})
+    result = json.dumps({"temperature": 15, "condition": "cloudy"})
+    
+    req = membrane_pb2.IngestToolOutputRequest(
+        source="agent-1",
+        tool_name="weather_api",
+        args=args.encode(),
+        result=result.encode(),
+        depends_on=["rec-456"],
+        timestamp=datetime.now().isoformat(),
+        tags=["tool", "api_call"]
+    )
+    
+    resp = stub.IngestToolOutput(req)
+    ```
+  </Tab>
+</Tabs>
+
+## IngestObservation
+
+Record observations as subject-predicate-object triples (RDF-style).
+
+### Request Parameters
+
+<ParamField path="source" type="string" required>
+  Identifier of the observing agent or system
+</ParamField>
+
+<ParamField path="subject" type="string" required>
+  The entity being observed
+</ParamField>
+
+<ParamField path="predicate" type="string" required>
+  The relationship or property being observed
+</ParamField>
+
+<ParamField path="object" type="bytes" required>
+  JSON-encoded value representing the object of the observation
+</ParamField>
+
+<ParamField path="timestamp" type="string" required>
+  RFC 3339 formatted timestamp
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Array of tags for categorization
+</ParamField>
+
+<ParamField path="scope" type="string">
+  Visibility scope
+</ParamField>
+
+<ParamField path="sensitivity" type="string">
+  Sensitivity level
+</ParamField>
+
+### Response
+
+<ResponseField name="record" type="bytes" required>
+  JSON-encoded MemoryRecord containing the stored observation
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    object, _ := json.Marshal("vegetarian")
+    
+    req := &membranev1.IngestObservationRequest{
+        Source:      "agent-1",
+        Subject:     "user:john_doe",
+        Predicate:   "dietary_preference",
+        Object:      object,
+        Timestamp:   time.Now().Format(time.RFC3339),
+        Tags:        []string{"user_profile", "preference"},
+        Scope:       "private",
+        Sensitivity: "personal",
+    }
+    
+    resp, err := client.IngestObservation(ctx, req)
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    import json
+    
+    req = membrane_pb2.IngestObservationRequest(
+        source="agent-1",
+        subject="user:john_doe",
+        predicate="dietary_preference",
+        object=json.dumps("vegetarian").encode(),
+        timestamp=datetime.now().isoformat(),
+        tags=["user_profile", "preference"],
+        scope="private",
+        sensitivity="personal"
+    )
+    
+    resp = stub.IngestObservation(req)
+    ```
+  </Tab>
+</Tabs>
+
+## IngestOutcome
+
+Track the outcome of actions or operations, linking to previous records.
+
+### Request Parameters
+
+<ParamField path="source" type="string" required>
+  Identifier of the reporting agent or system
+</ParamField>
+
+<ParamField path="target_record_id" type="string" required>
+  ID of the memory record this outcome relates to
+</ParamField>
+
+<ParamField path="outcome_status" type="string" required>
+  Status of the outcome: "success", "failure", or "partial"
+</ParamField>
+
+<ParamField path="timestamp" type="string" required>
+  RFC 3339 formatted timestamp
+</ParamField>
+
+### Response
+
+<ResponseField name="record" type="bytes" required>
+  JSON-encoded MemoryRecord containing the stored outcome
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    req := &membranev1.IngestOutcomeRequest{
+        Source:         "agent-1",
+        TargetRecordId: "rec-789",
+        OutcomeStatus:  "success",
+        Timestamp:      time.Now().Format(time.RFC3339),
+    }
+    
+    resp, err := client.IngestOutcome(ctx, req)
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    req = membrane_pb2.IngestOutcomeRequest(
+        source="agent-1",
+        target_record_id="rec-789",
+        outcome_status="success",
+        timestamp=datetime.now().isoformat()
+    )
+    
+    resp = stub.IngestOutcome(req)
+    ```
+  </Tab>
+</Tabs>
+
+## IngestWorkingState
+
+Persist the current working state of an agent, including context, next actions, and constraints.
+
+### Request Parameters
+
+<ParamField path="source" type="string" required>
+  Identifier of the agent
+</ParamField>
+
+<ParamField path="thread_id" type="string" required>
+  Unique identifier for the conversation or task thread
+</ParamField>
+
+<ParamField path="state" type="string" required>
+  Current state description
+</ParamField>
+
+<ParamField path="next_actions" type="string[]">
+  Array of planned next actions
+</ParamField>
+
+<ParamField path="open_questions" type="string[]">
+  Array of unresolved questions
+</ParamField>
+
+<ParamField path="context_summary" type="string">
+  Summary of the current context
+</ParamField>
+
+<ParamField path="active_constraints" type="bytes">
+  JSON-encoded array of active constraints
+</ParamField>
+
+<ParamField path="timestamp" type="string" required>
+  RFC 3339 formatted timestamp
+</ParamField>
+
+<ParamField path="tags" type="string[]">
+  Array of tags for categorization
+</ParamField>
+
+<ParamField path="scope" type="string">
+  Visibility scope
+</ParamField>
+
+<ParamField path="sensitivity" type="string">
+  Sensitivity level
+</ParamField>
+
+### Response
+
+<ResponseField name="record" type="bytes" required>
+  JSON-encoded MemoryRecord containing the stored working state
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    constraints, _ := json.Marshal([]map[string]interface{}{
+        {"type": "budget", "max": 1000},
+        {"type": "time", "deadline": "2026-03-15T00:00:00Z"},
+    })
+    
+    req := &membranev1.IngestWorkingStateRequest{
+        Source:            "agent-1",
+        ThreadId:          "thread-abc-123",
+        State:             "analyzing_requirements",
+        NextActions:       []string{"validate_inputs", "fetch_data"},
+        OpenQuestions:     []string{"What is the user's timezone?"},
+        ContextSummary:    "User requested weather forecast",
+        ActiveConstraints: constraints,
+        Timestamp:         time.Now().Format(time.RFC3339),
+        Tags:              []string{"working_state", "active"},
+        Scope:             "thread",
+    }
+    
+    resp, err := client.IngestWorkingState(ctx, req)
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    import json
+    
+    constraints = json.dumps([
+        {"type": "budget", "max": 1000},
+        {"type": "time", "deadline": "2026-03-15T00:00:00Z"}
+    ])
+    
+    req = membrane_pb2.IngestWorkingStateRequest(
+        source="agent-1",
+        thread_id="thread-abc-123",
+        state="analyzing_requirements",
+        next_actions=["validate_inputs", "fetch_data"],
+        open_questions=["What is the user's timezone?"],
+        context_summary="User requested weather forecast",
+        active_constraints=constraints.encode(),
+        timestamp=datetime.now().isoformat(),
+        tags=["working_state", "active"],
+        scope="thread"
+    )
+    
+    resp = stub.IngestWorkingState(req)
+    ```
+  </Tab>
+</Tabs>
+
+## Common Response Structure
+
+All ingestion methods return an `IngestResponse` with the following structure:
+
+```json
+{
+  "record": "<JSON-encoded MemoryRecord>"
+}
+```
+
+The `record` field contains a JSON-encoded `MemoryRecord` with properties like:
+- `id`: Unique identifier for the record
+- `type`: Type of memory record
+- `content`: The actual content stored
+- `metadata`: Additional metadata
+- `salience`: Initial salience score
+- `created_at`: Creation timestamp
+- `provenance`: Source and lineage information

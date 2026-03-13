@@ -1,0 +1,498 @@
+---
+title: TypeScript Client
+description: Use Membrane from Node.js and TypeScript applications
+---
+
+The TypeScript client provides a type-safe, Promise-based API for communicating with the Membrane daemon over gRPC.
+
+## Installation
+
+```bash
+npm install @gustycube/membrane
+```
+
+## Requirements
+
+- Node.js 20+
+- A running Membrane daemon (default: `localhost:9090`)
+
+## Quick Start
+
+```ts
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const client = new MembraneClient("localhost:9090", {
+  apiKey: "your-api-key"
+});
+
+const record = await client.ingestEvent("file_edit", "src/main.ts", {
+  summary: "Refactored auth middleware",
+  sensitivity: Sensitivity.LOW,
+  tags: ["auth", "typescript"]
+});
+
+const records = await client.retrieve("debug auth", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "agent-1",
+    scopes: []
+  },
+  limit: 10
+});
+
+console.log(record.id, records.length);
+client.close();
+```
+
+## Connection
+
+### Basic Connection
+
+```ts
+import { MembraneClient } from "@gustycube/membrane";
+
+const client = new MembraneClient("localhost:9090");
+```
+
+### With Authentication
+
+```ts
+const client = new MembraneClient("localhost:9090", {
+  apiKey: process.env.MEMBRANE_API_KEY
+});
+```
+
+### With TLS
+
+```ts
+const client = new MembraneClient("membrane.example.com:443", {
+  tls: true,
+  tlsCaCertPath: "/path/to/ca.pem",
+  apiKey: "your-api-key",
+  timeoutMs: 10_000
+});
+```
+
+## Ingestion
+
+### Ingest Event
+
+Capture episodic events:
+
+```ts
+const record = await client.ingestEvent("tool_call", "task#1", {
+  summary: "Ran database migration successfully",
+  tags: ["db", "migration"],
+  sensitivity: Sensitivity.LOW,
+  source: "migration-agent"
+});
+
+console.log(`Created record: ${record.id}`);
+```
+
+### Ingest Tool Output
+
+Capture tool invocation results:
+
+```ts
+const record = await client.ingestToolOutput("npm_install", {
+  args: { packages: ["express", "typescript"] },
+  result: { success: true, installed: 127 },
+  tags: ["dependencies", "npm"],
+  source: "package-agent"
+});
+```
+
+### Ingest Observation
+
+Store semantic facts:
+
+```ts
+const record = await client.ingestObservation(
+  "user",
+  "prefers_language",
+  "typescript",
+  {
+    tags: ["preferences"],
+    sensitivity: Sensitivity.LOW
+  }
+);
+```
+
+### Ingest Working State
+
+Snapshot task state:
+
+```ts
+const record = await client.ingestWorkingState("session-001", "executing", {
+  nextActions: ["run tests", "deploy"],
+  openQuestions: ["Should we notify users?"],
+  contextSummary: "Migration in progress",
+  tags: ["session"]
+});
+```
+
+### Ingest Outcome
+
+Attach outcome to an existing record:
+
+```ts
+const record = await client.ingestOutcome(
+  existingRecordId,
+  "success",
+  { source: "build-agent" }
+);
+```
+
+## Retrieval
+
+### Basic Retrieval
+
+```ts
+const records = await client.retrieve("how to handle errors", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "error-agent",
+    scopes: []
+  },
+  limit: 10
+});
+
+for (const record of records) {
+  console.log(`[${record.type}] ${record.id} (salience=${record.salience})`);
+}
+```
+
+### Filter by Memory Type
+
+```ts
+const records = await client.retrieve("database operations", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "db-agent",
+    scopes: []
+  },
+  memoryTypes: ["semantic", "competence"],
+  limit: 5
+});
+```
+
+### Retrieve with Selection Metadata
+
+```ts
+const result = await client.retrieveWithSelection("plan deployment", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "deploy-agent",
+    scopes: ["prod"]
+  },
+  limit: 10
+});
+
+console.log(`Found ${result.records.length} records`);
+if (result.selection) {
+  console.log(`Selection confidence: ${result.selection.confidence}`);
+}
+```
+
+### Retrieve by ID
+
+```ts
+const record = await client.retrieveById(recordId, {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "agent-1",
+    scopes: []
+  }
+});
+```
+
+## Revision Operations
+
+### Supersede
+
+Replace a record with a new version:
+
+```ts
+const updated = await client.supersede(
+  oldRecordId,
+  newRecordData,
+  "agent-1",
+  "Updated Go version from 1.21 to 1.22"
+);
+```
+
+### Fork
+
+Create a conditional variant:
+
+```ts
+const forked = await client.fork(
+  sourceRecordId,
+  forkedRecordData,
+  "agent-1",
+  "Different configuration for dev environment"
+);
+```
+
+### Retract
+
+Soft-delete a record:
+
+```ts
+await client.retract(recordId, "agent-1", "No longer accurate");
+```
+
+### Merge
+
+Consolidate duplicate records:
+
+```ts
+const merged = await client.merge(
+  [recordId1, recordId2, recordId3],
+  mergedRecordData,
+  "agent-1",
+  "Consolidating duplicate observations"
+);
+```
+
+### Contest
+
+Mark conflicting evidence:
+
+```ts
+await client.contest(
+  recordId,
+  conflictingRecordId,
+  "agent-1",
+  "New evidence contradicts this fact"
+);
+```
+
+## Reinforcement
+
+### Reinforce
+
+Boost a useful record's salience:
+
+```ts
+await client.reinforce(recordId, "agent-1", "Used successfully in deployment");
+```
+
+### Penalize
+
+Reduce an unhelpful record's salience:
+
+```ts
+await client.penalize(recordId, 0.2, "agent-1", "Not relevant to current task");
+```
+
+## Metrics
+
+Retrieve observability metrics:
+
+```ts
+const metrics = await client.getMetrics();
+
+console.log(`Total records: ${metrics.total_records}`);
+console.log(`Retrieval usefulness: ${metrics.retrieval_usefulness}`);
+console.log(`Competence success rate: ${metrics.competence_success_rate}`);
+```
+
+## LLM Integration Pattern
+
+Integrate Membrane with OpenAI or compatible LLM providers:
+
+```ts
+import OpenAI from "openai";
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const memory = new MembraneClient("localhost:9090", {
+  apiKey: process.env.MEMBRANE_API_KEY
+});
+
+const llm = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  // For OpenRouter or other OpenAI-compatible providers:
+  // baseURL: "https://openrouter.ai/api/v1",
+});
+
+const records = await memory.retrieve("how should I handle this incident?", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "incident-agent",
+    scopes: ["prod"],
+  },
+  memoryTypes: ["semantic", "competence", "working"],
+  limit: 10,
+});
+
+const memoryContext = records.map((r) => JSON.stringify(r)).join("\n");
+
+const completion = await llm.chat.completions.create({
+  model: "gpt-5.2",
+  messages: [
+    { role: "system", content: "Use the memory context as evidence. Cite record ids." },
+    { role: "user", content: `Incident task:\n...\n\nMemory:\n${memoryContext}` },
+  ],
+});
+
+console.log(completion.choices[0]?.message?.content);
+memory.close();
+```
+
+### Full Agent Loop
+
+```ts
+import OpenAI from "openai";
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const memory = new MembraneClient("localhost:9090", { apiKey: process.env.MEMBRANE_API_KEY });
+const llm = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  // OpenAI-compatible providers are supported here, e.g. OpenRouter:
+  // baseURL: "https://openrouter.ai/api/v1",
+});
+
+const records = await memory.retrieve("plan a safe migration", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "planner-agent",
+    scopes: ["project-acme"],
+  },
+  memoryTypes: ["semantic", "competence", "working"],
+  limit: 12,
+});
+
+const context = records.map((r) => JSON.stringify(r)).join("\n");
+
+const completion = await llm.chat.completions.create({
+  model: "gpt-5.2",
+  messages: [
+    { role: "system", content: "Use memory context as evidence. Cite record ids." },
+    { role: "user", content: `Task: plan migration\n\nMemory:\n${context}` },
+  ],
+});
+
+const answer = completion.choices[0]?.message?.content ?? "";
+const planRecord = await memory.ingestEvent("llm_plan", "migration-task-42", {
+  source: "planner-agent",
+  summary: answer.slice(0, 500),
+  tags: ["llm", "plan", "migration"],
+  scope: "project-acme",
+});
+await memory.reinforce(planRecord.id, "planner-agent", "plan used successfully");
+
+memory.close();
+```
+
+## Error Handling
+
+Failed RPCs reject with `MembraneError`:
+
+```ts
+import { MembraneClient, MembraneError } from "@gustycube/membrane";
+
+try {
+  const record = await client.retrieveById("invalid-id");
+} catch (err) {
+  if (err instanceof MembraneError) {
+    console.error(`gRPC error ${err.code} (${err.codeName}): ${err.details}`);
+    console.error("Metadata:", err.metadata);
+  } else {
+    throw err;
+  }
+}
+```
+
+Error properties:
+- `code`: Numeric gRPC status code
+- `codeName`: Symbolic status name (e.g., `UNAUTHENTICATED`)
+- `details`: gRPC details string
+- `metadata`: Response metadata
+
+## API Reference
+
+### Ingestion Methods
+
+| Method | Description |
+|--------|-------------|
+| `ingestEvent(eventKind, ref, options)` | Ingest a raw event |
+| `ingestToolOutput(toolName, options)` | Ingest tool invocation output |
+| `ingestObservation(subject, predicate, obj, options)` | Ingest a semantic triple |
+| `ingestOutcome(targetRecordId, outcomeStatus, options)` | Attach outcome to existing record |
+| `ingestWorkingState(threadId, state, options)` | Ingest working memory snapshot |
+
+### Retrieval Methods
+
+| Method | Description |
+|--------|-------------|
+| `retrieve(taskDescriptor, options)` | Retrieve relevant memories (returns records only) |
+| `retrieveWithSelection(taskDescriptor, options)` | Retrieve memories with selection metadata |
+| `retrieveById(recordId, options)` | Retrieve single record by ID |
+
+### Revision Methods
+
+| Method | Description |
+|--------|-------------|
+| `supersede(oldId, newRecord, actor, rationale)` | Replace record with new version |
+| `fork(sourceId, forkedRecord, actor, rationale)` | Create conditional variant |
+| `retract(recordId, actor, rationale)` | Soft-delete record |
+| `merge(recordIds, mergedRecord, actor, rationale)` | Merge multiple records |
+| `contest(recordId, contestingRef, actor, rationale)` | Mark record as contested |
+
+### Reinforcement Methods
+
+| Method | Description |
+|--------|-------------|
+| `reinforce(recordId, actor, rationale)` | Boost record salience |
+| `penalize(recordId, amount, actor, rationale)` | Reduce record salience |
+
+### Metrics
+
+| Method | Description |
+|--------|-------------|
+| `getMetrics()` | Retrieve observability metrics snapshot |
+
+### Snake Case Aliases
+
+All methods have snake_case aliases for consistency with the Python client:
+
+```ts
+await client.ingest_event(...);
+await client.ingest_tool_output(...);
+await client.retrieve_with_selection(...);
+await client.get_metrics();
+```
+
+## Development
+
+```bash
+cd clients/typescript
+npm install
+npm run typecheck
+npm test
+npm run build
+```
+
+### Proto Sync
+
+Sync protocol buffers from the main repository:
+
+```bash
+npm run sync:proto
+npm run check:proto-sync
+```
+
+## Next Steps
+
+- Explore [LLM Integration Patterns](/guides/llm-integration)
+- Learn about [Memory Types](/concepts/memory-types)
+- Review [Security Best Practices](/guides/security)

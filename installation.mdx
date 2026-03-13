@@ -1,0 +1,326 @@
+---
+title: Installation
+description: Install and configure Membrane for your agent
+---
+
+## Prerequisites
+
+Before installing Membrane, ensure you have the following:
+
+<CardGroup cols={2}>
+  <Card title="Go 1.22+" icon="golang">
+    Membrane is built with Go 1.24 and requires Go 1.22 or later
+  </Card>
+  
+  <Card title="Make" icon="hammer">
+    Build automation tool for compiling the daemon and running tests
+  </Card>
+  
+  <Card title="Protocol Buffers" icon="code">
+    `protoc` >= 3.20 for gRPC development (optional)
+  </Card>
+  
+  <Card title="SQLCipher" icon="database">
+    Embedded in the Go driver, no separate installation needed
+  </Card>
+</CardGroup>
+
+<Note>
+  For client SDK development, you'll also need:
+  - **Node.js 20+** for the TypeScript client
+  - **Python 3.10+** for the Python client
+</Note>
+
+## Installation Methods
+
+Membrane can be used in two ways:
+
+1. **As a daemon** — Run `membraned` as a long-lived gRPC server
+2. **As an embedded library** — Import `github.com/GustyCube/membrane` into your Go application
+
+### Method 1: Build and Run as Daemon
+
+<Steps>
+  <Step title="Clone the Repository">
+    ```bash
+    git clone https://github.com/GustyCube/membrane.git
+    cd membrane
+    ```
+  </Step>
+  
+  <Step title="Build the Daemon">
+    ```bash
+    make build
+    ```
+    
+    This creates the `bin/membraned` binary.
+  </Step>
+  
+  <Step title="Run with Default Configuration">
+    ```bash
+    ./bin/membraned
+    ```
+    
+    The daemon starts with:
+    - SQLite database at `membrane.db`
+    - gRPC server on port `:9090`
+    - No encryption (see Security Configuration below)
+  </Step>
+  
+  <Step title="Verify Installation">
+    The daemon should log:
+    ```
+    [INFO] Membrane started on :9090
+    [INFO] Database: membrane.db
+    [INFO] Decay interval: 1h0m0s
+    [INFO] Consolidation interval: 6h0m0s
+    ```
+  </Step>
+</Steps>
+
+### Method 2: Embed as Go Library
+
+Add Membrane to your Go project:
+
+```bash
+go get github.com/GustyCube/membrane@latest
+```
+
+Then use it in your code:
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/GustyCube/membrane/pkg/ingestion"
+    "github.com/GustyCube/membrane/pkg/membrane"
+    "github.com/GustyCube/membrane/pkg/retrieval"
+    "github.com/GustyCube/membrane/pkg/schema"
+)
+
+func main() {
+    cfg := membrane.DefaultConfig()
+    cfg.DBPath = "my-agent.db"
+
+    m, err := membrane.New(cfg)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer m.Stop()
+
+    ctx := context.Background()
+    m.Start(ctx)
+
+    // Ingest an episodic event
+    rec, _ := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+        Source:    "build-agent",
+        EventKind: "tool_call",
+        Ref:       "build#42",
+        Summary:   "Executed go build, failed with linker error",
+        Tags:      []string{"build", "error"},
+    })
+    fmt.Printf("Ingested episodic record: %s\n", rec.ID)
+}
+```
+
+## Configuration
+
+Membrane is configured via YAML file or command-line flags.
+
+### Create a Configuration File
+
+Create `config.yaml`:
+
+```yaml
+db_path: "membrane.db"
+listen_addr: ":9090"
+decay_interval: "1h"
+consolidation_interval: "6h"
+default_sensitivity: "low"
+selection_confidence_threshold: 0.7
+
+# Security (prefer environment variables for keys)
+# encryption_key: ""       # or set MEMBRANE_ENCRYPTION_KEY
+# api_key: ""              # or set MEMBRANE_API_KEY
+# tls_cert_file: ""
+# tls_key_file: ""
+rate_limit_per_second: 100
+```
+
+### Configuration Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `db_path` | string | `membrane.db` | SQLite database file path |
+| `listen_addr` | string | `:9090` | gRPC server listen address |
+| `decay_interval` | duration | `1h` | How often to run decay job |
+| `consolidation_interval` | duration | `6h` | How often to run consolidation |
+| `default_sensitivity` | string | `low` | Default sensitivity for ingested records |
+| `selection_confidence_threshold` | float | `0.7` | Minimum confidence for competence/plan selection |
+| `encryption_key` | string | `""` | SQLCipher encryption key (use env var) |
+| `api_key` | string | `""` | Bearer token for gRPC auth (use env var) |
+| `tls_cert_file` | string | `""` | Path to TLS certificate PEM |
+| `tls_key_file` | string | `""` | Path to TLS private key PEM |
+| `rate_limit_per_second` | int | `100` | Max requests per second per client |
+
+### Run with Custom Configuration
+
+```bash
+# Using config file
+./bin/membraned --config /path/to/config.yaml
+
+# Override specific options
+./bin/membraned --db /path/to/membrane.db --addr :8080
+```
+
+## Security Configuration
+
+<Warning>
+  Always use environment variables for sensitive configuration like encryption keys and API keys. Never commit these to version control.
+</Warning>
+
+### Enable Database Encryption
+
+```bash
+export MEMBRANE_ENCRYPTION_KEY="your-strong-encryption-key-here"
+./bin/membraned
+```
+
+Membrane uses SQLCipher to encrypt the database at rest with `PRAGMA key`.
+
+### Enable API Key Authentication
+
+```bash
+export MEMBRANE_API_KEY="your-api-key-here"
+./bin/membraned
+```
+
+Clients must include the API key as a bearer token in the `authorization` metadata:
+
+```go
+md := metadata.New(map[string]string{
+    "authorization": "Bearer your-api-key-here",
+})
+ctx := metadata.NewOutgoingContext(context.Background(), md)
+```
+
+### Enable TLS Transport
+
+Generate a certificate and key:
+
+```bash
+openssl req -x509 -newkey rsa:4096 -keyout key.pem -out cert.pem -days 365 -nodes
+```
+
+Configure TLS in `config.yaml`:
+
+```yaml
+tls_cert_file: "/path/to/cert.pem"
+tls_key_file: "/path/to/key.pem"
+```
+
+## Environment Variables
+
+Membrane reads sensitive configuration from environment variables:
+
+| Variable | Purpose |
+|----------|--------|
+| `MEMBRANE_ENCRYPTION_KEY` | SQLCipher encryption key for the database |
+| `MEMBRANE_API_KEY` | Bearer token for gRPC authentication |
+
+## Running Tests
+
+Verify your installation by running the test suite:
+
+```bash
+# Run all unit and integration tests
+make test
+
+# Run specific evaluation tests
+make eval-typed          # Memory type handling
+make eval-revision       # Revision semantics
+make eval-decay          # Decay curves and pruning
+make eval-trust          # Trust-gated retrieval
+
+# Run all evaluations
+make eval-all
+```
+
+## Client SDKs
+
+### TypeScript Client
+
+Install the TypeScript SDK:
+
+```bash
+npm install @gustycube/membrane
+```
+
+Example usage:
+
+```typescript
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const client = new MembraneClient("localhost:9090", { 
+  apiKey: process.env.MEMBRANE_API_KEY 
+});
+
+const record = await client.ingestEvent("tool_call", "task#1", {
+  summary: "Ran database migration successfully",
+  tags: ["db", "migration"]
+});
+
+client.close();
+```
+
+See the [TypeScript client README](https://github.com/GustyCube/membrane/tree/main/clients/typescript) for full API reference.
+
+### Python Client
+
+Install the Python SDK:
+
+```bash
+pip install -e clients/python
+```
+
+Example usage:
+
+```python
+from membrane import MembraneClient, Sensitivity, TrustContext
+
+client = MembraneClient("localhost:9090", api_key="your-key")
+
+record = client.ingest_event(
+    source="my-agent",
+    event_kind="tool_call",
+    ref="task#1",
+    summary="Ran database migration successfully",
+    tags=["db", "migration"],
+)
+```
+
+See the [Python client README](https://github.com/GustyCube/membrane/tree/main/clients/python) for full API reference.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Try your first ingestion and retrieval operations
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Learn about the three-plane architecture
+  </Card>
+  
+  <Card title="Configuration Reference" icon="gear" href="/guides/configuration">
+    Detailed configuration options and environment variables
+  </Card>
+  
+  <Card title="gRPC API" icon="plug" href="/api/overview">
+    Explore the 15-method gRPC API surface
+  </Card>
+</CardGroup>

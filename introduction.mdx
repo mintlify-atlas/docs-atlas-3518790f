@@ -1,0 +1,164 @@
+---
+title: Introduction
+description: Learn what Membrane is and why it exists for long-lived LLM agents
+---
+
+## What is Membrane?
+
+Membrane is a **general-purpose selective learning and memory substrate** for LLM and agentic systems. It gives long-lived agents structured, revisable memory with built-in decay, trust-gated retrieval, and audit trails.
+
+Instead of an append-only context window or flat text log, agents get typed memory records that can be consolidated, revised, contested, and pruned over time.
+
+## Why Membrane?
+
+Most LLM/agent "memory" is either ephemeral (context windows that reset each turn) or an append-only text log stuffed into a RAG pipeline. That gives you retrieval, but not learning: facts get stale, procedures drift, and the system cannot revise itself safely.
+
+Membrane makes memory **selective** and **revisable**. It captures raw experience, promotes it into structured knowledge, and lets you supersede, fork, contest, or retract that knowledge with evidence. The result is an agent that can improve over time while remaining predictable, auditable, and safe.
+
+## 60-Second Mental Model
+
+Here's how Membrane works in five steps:
+
+<Steps>
+  <Step title="Ingest">
+    Capture events, tool outputs, observations, and working state as structured records
+  </Step>
+  
+  <Step title="Consolidate">
+    Automatically extract episodic traces into semantic facts, competence procedures, and reusable plan graphs
+  </Step>
+  
+  <Step title="Retrieve">
+    Query memory in layers with trust gating and salience ranking to get relevant context
+  </Step>
+  
+  <Step title="Revise">
+    Update knowledge with explicit operations (supersede, fork, retract, merge, contest) and full audit trails
+  </Step>
+  
+  <Step title="Decay">
+    Automatically reduce salience over time unless reinforced by successful use
+  </Step>
+</Steps>
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Typed Memory" icon="database">
+    Explicit schemas and lifecycles for each memory type, not a flat text store
+  </Card>
+  
+  <Card title="Revisable Knowledge" icon="arrows-rotate">
+    Supersede, fork, retract, merge, and contest records with full provenance tracking
+  </Card>
+  
+  <Card title="Competence Learning" icon="brain">
+    Agents learn *how* to solve problems (procedures, success rates), not just *what* happened
+  </Card>
+  
+  <Card title="Decay & Consolidation" icon="clock">
+    Time-based salience decay keeps memory useful; background jobs extract durable knowledge
+  </Card>
+  
+  <Card title="Trust-Aware Retrieval" icon="shield">
+    Sensitivity levels with graduated access control and redacted responses
+  </Card>
+  
+  <Card title="Security & Operations" icon="lock">
+    SQLCipher encryption, TLS, API key auth, rate limiting, full audit logs
+  </Card>
+  
+  <Card title="Observability" icon="chart-line">
+    Metrics for retrieval usefulness, competence success rate, plan reuse, memory growth
+  </Card>
+  
+  <Card title="gRPC API" icon="plug">
+    15-method gRPC service with TypeScript and Python client SDKs, or embed as Go library
+  </Card>
+</CardGroup>
+
+## Memory Types at a Glance
+
+Membrane organizes memory into five distinct types, each with its own schema and lifecycle:
+
+| Type | Purpose | Example |
+|------|---------|--------|
+| **Episodic** | Raw experience capture (immutable) | Tool calls, errors, observations from a debugging session |
+| **Working** | Current task state | "Backend initialized, frontend pending, docs TODO" |
+| **Semantic** | Stable facts and preferences | "User prefers Go for backend services" |
+| **Competence** | Learned procedures with success tracking | "To fix linker cache error: clear cache, rebuild with flags" |
+| **Plan Graph** | Reusable solution structures as directed graphs | Multi-step project setup workflow with dependencies |
+
+Each memory type has its own schema, lifecycle rules, and consolidation behavior. See [Memory Types](/concepts/memory-types) for detailed schemas and examples.
+
+## How It Works
+
+Membrane runs as a long-lived daemon or embedded Go library. The architecture is organized into three logical planes:
+
+```
++------------------+     +------------------+     +----------------------+
+|  Ingestion Plane |---->|   Policy Plane   |---->| Storage & Retrieval  |
++------------------+     +------------------+     +----------------------+
+        |
+   Events, tool            Classification,            SQLCipher (encrypted),
+   outputs, obs.,          sensitivity,               audit trails,
+   working state           decay profiles             trust-gated access
+```
+
+### Background Jobs
+
+Membrane runs three background jobs to maintain memory health:
+
+- **Decay** (every 1 hour): Applies time-based salience decay using exponential or linear curves
+- **Pruning** (with decay): Deletes records with `auto_prune` policy whose salience has reached 0
+- **Consolidation** (every 6 hours): Extracts semantic facts, competence records, and plan graphs from episodic memory
+
+## Use Cases
+
+<AccordionGroup>
+  <Accordion title="Long-Lived Assistants">
+    Build agents that remember user preferences, learn from past interactions, and improve their responses over time without manual retraining.
+  </Accordion>
+  
+  <Accordion title="Troubleshooting Bots">
+    Extract competence records from repeated debugging sessions so the agent learns reliable fix procedures and can apply them automatically.
+  </Accordion>
+  
+  <Accordion title="Project Setup Automation">
+    Capture plan graphs from successful project initializations and reuse them as templates for similar projects.
+  </Accordion>
+  
+  <Accordion title="Compliance & Audit">
+    Track all memory operations with full audit trails, sensitivity classification, and trust-gated retrieval for regulated environments.
+  </Accordion>
+</AccordionGroup>
+
+## Design Philosophy
+
+Membrane is designed around several core principles:
+
+1. **Learning must be automatic** — The agent should not require explicit user approval to record experience or derive new knowledge
+2. **Memory must be selective and typed** — Different kinds of information must have different representations and lifecycles
+3. **Long-term memory must be revisable** — Facts, preferences, and procedures must be editable, replaceable, or retractable when new evidence appears
+4. **Support competence learning** — The system learns procedures and heuristics, not just facts
+5. **All memory access must be auditable** — Compatible with trust- and sensitivity-based retrieval
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Get started with building and running Membrane
+  </Card>
+  
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Try your first ingestion and retrieval operations
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand the three-plane architecture in depth
+  </Card>
+  
+  <Card title="Memory Types" icon="layer-group" href="/concepts/memory-types">
+    Learn about the five memory types and their schemas
+  </Card>
+</CardGroup>

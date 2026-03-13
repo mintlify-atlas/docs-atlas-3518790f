@@ -1,0 +1,882 @@
+---
+title: "TypeScript Client"
+description: "Complete API reference for the Membrane TypeScript client"
+---
+
+## Installation
+
+Install the Membrane TypeScript client from npm:
+
+```bash
+npm install @gustycube/membrane
+```
+
+The client requires Node.js 20 or higher.
+
+## Quick Start
+
+```typescript
+import { MembraneClient, Sensitivity } from '@gustycube/membrane';
+
+const client = new MembraneClient('localhost:9090');
+
+// Ingest an event
+const record = await client.ingestEvent(
+  'file_edit',
+  'src/main.ts',
+  { 
+    summary: 'Updated main entry point',
+    sensitivity: Sensitivity.LOW 
+  }
+);
+
+// Retrieve relevant memories
+const memories = await client.retrieve(
+  'What files have been edited recently?',
+  { limit: 10 }
+);
+
+client.close();
+```
+
+## MembraneClient
+
+### Constructor
+
+```typescript
+new MembraneClient(addr?: string, options?: MembraneClientOptions)
+```
+
+Create a new client instance.
+
+<ParamField path="addr" type="string" default="localhost:9090">
+  gRPC server address in `host:port` format.
+</ParamField>
+
+<ParamField path="options" type="MembraneClientOptions">
+  Optional configuration object.
+</ParamField>
+
+#### MembraneClientOptions
+
+<ParamField path="tls" type="boolean" default={false}>
+  Enable TLS transport.
+</ParamField>
+
+<ParamField path="tlsCaCertPath" type="string">
+  Path to PEM-encoded CA certificate for server verification.
+</ParamField>
+
+<ParamField path="apiKey" type="string">
+  Optional Bearer token for server authentication.
+</ParamField>
+
+<ParamField path="timeoutMs" type="number">
+  Default timeout in milliseconds for all RPC calls.
+</ParamField>
+
+<ParamField path="transport" type="RpcTransport">
+  Custom transport implementation (advanced use only).
+</ParamField>
+
+### Example: Secure Connection
+
+```typescript
+const client = new MembraneClient(
+  'membrane.example.com:443',
+  {
+    tls: true,
+    apiKey: 'your-api-key',
+    timeoutMs: 10000
+  }
+);
+```
+
+## Ingestion Methods
+
+### ingestEvent
+
+```typescript
+ingestEvent(
+  eventKind: string,
+  ref: string,
+  options?: IngestEventOptions
+): Promise<MemoryRecord>
+```
+
+Ingest an event into the memory substrate.
+
+<ParamField path="eventKind" type="string" required>
+  Type of event (e.g., `"file_edit"`, `"error"`, `"user_action"`).
+</ParamField>
+
+<ParamField path="ref" type="string" required>
+  Reference identifier for the event source.
+</ParamField>
+
+<ParamField path="options.summary" type="string">
+  Human-readable summary of the event.
+</ParamField>
+
+<ParamField path="options.sensitivity" type="Sensitivity | string" default="low">
+  Sensitivity classification: `"public"`, `"low"`, `"medium"`, `"high"`, or `"hyper"`.
+</ParamField>
+
+<ParamField path="options.source" type="string" default="typescript-client">
+  Source identifier for provenance tracking.
+</ParamField>
+
+<ParamField path="options.tags" type="string[]">
+  Optional tags for categorization.
+</ParamField>
+
+<ParamField path="options.scope" type="string">
+  Visibility scope for the record.
+</ParamField>
+
+<ParamField path="options.timestamp" type="string">
+  RFC 3339 timestamp; defaults to current time.
+</ParamField>
+
+#### Example
+
+```typescript
+const record = await client.ingestEvent(
+  'deployment',
+  'prod-v2.3.1',
+  {
+    summary: 'Deployed version 2.3.1 to production',
+    sensitivity: Sensitivity.MEDIUM,
+    tags: ['production', 'deployment'],
+    scope: 'engineering'
+  }
+);
+```
+
+### ingestToolOutput
+
+```typescript
+ingestToolOutput(
+  toolName: string,
+  options?: IngestToolOutputOptions
+): Promise<MemoryRecord>
+```
+
+Ingest tool execution output into the memory substrate.
+
+<ParamField path="toolName" type="string" required>
+  Name of the tool that was executed.
+</ParamField>
+
+<ParamField path="options.args" type="Record<string, unknown>">
+  Arguments passed to the tool (JSON-serializable).
+</ParamField>
+
+<ParamField path="options.result" type="unknown">
+  Result produced by the tool (JSON-serializable).
+</ParamField>
+
+<ParamField path="options.sensitivity" type="Sensitivity | string" default="low">
+  Sensitivity classification.
+</ParamField>
+
+<ParamField path="options.source" type="string" default="typescript-client">
+  Source identifier for provenance.
+</ParamField>
+
+<ParamField path="options.dependsOn" type="string[]">
+  IDs of records this output depends on.
+</ParamField>
+
+<ParamField path="options.tags" type="string[]">
+  Optional tags for categorization.
+</ParamField>
+
+<ParamField path="options.scope" type="string">
+  Visibility scope.
+</ParamField>
+
+<ParamField path="options.timestamp" type="string">
+  RFC 3339 timestamp; defaults to current time.
+</ParamField>
+
+#### Example
+
+```typescript
+const record = await client.ingestToolOutput(
+  'file_search',
+  {
+    args: { pattern: '*.ts', directory: 'src' },
+    result: ['src/main.ts', 'src/utils.ts'],
+    tags: ['search', 'file-operation']
+  }
+);
+```
+
+### ingestObservation
+
+```typescript
+ingestObservation(
+  subject: string,
+  predicate: string,
+  obj: unknown,
+  options?: IngestObservationOptions
+): Promise<MemoryRecord>
+```
+
+Ingest a subject-predicate-object triple observation.
+
+<ParamField path="subject" type="string" required>
+  The subject of the observation.
+</ParamField>
+
+<ParamField path="predicate" type="string" required>
+  The relationship or property being observed.
+</ParamField>
+
+<ParamField path="obj" type="unknown" required>
+  The object of the observation (JSON-serializable).
+</ParamField>
+
+<ParamField path="options.sensitivity" type="Sensitivity | string" default="low">
+  Sensitivity classification.
+</ParamField>
+
+<ParamField path="options.source" type="string" default="typescript-client">
+  Source identifier for provenance.
+</ParamField>
+
+<ParamField path="options.tags" type="string[]">
+  Optional tags for categorization.
+</ParamField>
+
+<ParamField path="options.scope" type="string">
+  Visibility scope.
+</ParamField>
+
+<ParamField path="options.timestamp" type="string">
+  RFC 3339 timestamp; defaults to current time.
+</ParamField>
+
+#### Example
+
+```typescript
+await client.ingestObservation(
+  'user_123',
+  'prefers_language',
+  'typescript',
+  { tags: ['user-preferences'] }
+);
+```
+
+### ingestOutcome
+
+```typescript
+ingestOutcome(
+  targetRecordId: string,
+  outcomeStatus: OutcomeStatus | string,
+  options?: IngestOutcomeOptions
+): Promise<MemoryRecord>
+```
+
+Record an outcome for a previously ingested event.
+
+<ParamField path="targetRecordId" type="string" required>
+  ID of the record to attach the outcome to.
+</ParamField>
+
+<ParamField path="outcomeStatus" type="OutcomeStatus | string" required>
+  Result status: `"success"`, `"failure"`, or `"partial"`.
+</ParamField>
+
+<ParamField path="options.source" type="string" default="typescript-client">
+  Source identifier for provenance.
+</ParamField>
+
+<ParamField path="options.timestamp" type="string">
+  RFC 3339 timestamp; defaults to current time.
+</ParamField>
+
+#### Example
+
+```typescript
+import { OutcomeStatus } from '@gustycube/membrane';
+
+await client.ingestOutcome(
+  recordId,
+  OutcomeStatus.SUCCESS
+);
+```
+
+### ingestWorkingState
+
+```typescript
+ingestWorkingState(
+  threadId: string,
+  state: string,
+  options?: IngestWorkingStateOptions
+): Promise<MemoryRecord>
+```
+
+Ingest a working memory state snapshot for a task thread.
+
+<ParamField path="threadId" type="string" required>
+  Identifier for the task thread.
+</ParamField>
+
+<ParamField path="state" type="string" required>
+  Current task state (e.g., `"planning"`, `"executing"`, `"blocked"`).
+</ParamField>
+
+<ParamField path="options.nextActions" type="string[]">
+  Planned next steps.
+</ParamField>
+
+<ParamField path="options.openQuestions" type="string[]">
+  Unresolved questions.
+</ParamField>
+
+<ParamField path="options.contextSummary" type="string">
+  Human-readable context summary.
+</ParamField>
+
+<ParamField path="options.activeConstraints" type="Record<string, unknown>[]">
+  Active constraints as JSON objects.
+</ParamField>
+
+<ParamField path="options.sensitivity" type="Sensitivity | string" default="low">
+  Sensitivity classification.
+</ParamField>
+
+<ParamField path="options.source" type="string" default="typescript-client">
+  Source identifier for provenance.
+</ParamField>
+
+<ParamField path="options.tags" type="string[]">
+  Optional tags for categorization.
+</ParamField>
+
+<ParamField path="options.scope" type="string">
+  Visibility scope.
+</ParamField>
+
+<ParamField path="options.timestamp" type="string">
+  RFC 3339 timestamp; defaults to current time.
+</ParamField>
+
+#### Example
+
+```typescript
+await client.ingestWorkingState(
+  'thread-42',
+  'executing',
+  {
+    nextActions: ['run tests', 'deploy to staging'],
+    openQuestions: ['Which API version to use?'],
+    contextSummary: 'Implementing new authentication flow'
+  }
+);
+```
+
+## Retrieval Methods
+
+### retrieve
+
+```typescript
+retrieve(
+  taskDescriptor: string,
+  options?: RetrieveOptions
+): Promise<MemoryRecord[]>
+```
+
+Retrieve memories relevant to a task descriptor.
+
+<ParamField path="taskDescriptor" type="string" required>
+  Natural-language description of the current task.
+</ParamField>
+
+<ParamField path="options.trust" type="TrustContext">
+  Trust context controlling access permissions. Defaults to minimal context with `Sensitivity.LOW`.
+</ParamField>
+
+<ParamField path="options.memoryTypes" type="Array<MemoryType | string>">
+  Filter for specific memory types: `"episodic"`, `"working"`, `"semantic"`, `"competence"`, or `"plan_graph"`.
+</ParamField>
+
+<ParamField path="options.minSalience" type="number" default={0}>
+  Minimum salience threshold (0.0 to 1.0).
+</ParamField>
+
+<ParamField path="options.limit" type="number" default={10}>
+  Maximum number of records to return.
+</ParamField>
+
+#### Example
+
+```typescript
+import { MemoryType, createDefaultTrustContext } from '@gustycube/membrane';
+
+const trust = createDefaultTrustContext();
+trust.max_sensitivity = Sensitivity.MEDIUM;
+trust.authenticated = true;
+trust.actor_id = 'agent-1';
+
+const memories = await client.retrieve(
+  'Fix the authentication bug in the login flow',
+  {
+    trust,
+    memoryTypes: [MemoryType.EPISODIC, MemoryType.SEMANTIC],
+    minSalience: 0.3,
+    limit: 5
+  }
+);
+```
+
+### retrieveWithSelection
+
+```typescript
+retrieveWithSelection(
+  taskDescriptor: string,
+  options?: RetrieveOptions
+): Promise<RetrieveResult>
+```
+
+Retrieve memories with additional selection metadata.
+
+<ParamField path="taskDescriptor" type="string" required>
+  Natural-language description of the current task.
+</ParamField>
+
+<ParamField path="options" type="RetrieveOptions">
+  Same options as `retrieve()`.
+</ParamField>
+
+Returns a `RetrieveResult` object containing:
+- `records`: Array of `MemoryRecord` instances
+- `selection`: Optional `SelectionResult` with confidence metrics
+
+#### Example
+
+```typescript
+const result = await client.retrieveWithSelection(
+  'Find recent deployment errors',
+  { limit: 10 }
+);
+
+console.log(`Found ${result.records.length} records`);
+if (result.selection) {
+  console.log(`Selection confidence: ${result.selection.confidence}`);
+}
+```
+
+### retrieveById
+
+```typescript
+retrieveById(
+  recordId: string,
+  options?: { trust?: TrustContext }
+): Promise<MemoryRecord>
+```
+
+Retrieve a single memory record by its ID.
+
+<ParamField path="recordId" type="string" required>
+  The UUID of the record.
+</ParamField>
+
+<ParamField path="options.trust" type="TrustContext">
+  Trust context controlling access. Defaults to minimal context.
+</ParamField>
+
+#### Example
+
+```typescript
+const record = await client.retrieveById(
+  '550e8400-e29b-41d4-a716-446655440000'
+);
+```
+
+## Revision Methods
+
+### supersede
+
+```typescript
+supersede(
+  oldId: string,
+  newRecord: MemoryRecord | JsonObject,
+  actor: string,
+  rationale: string
+): Promise<MemoryRecord>
+```
+
+Supersede an existing record with a new version.
+
+<ParamField path="oldId" type="string" required>
+  ID of the record to supersede.
+</ParamField>
+
+<ParamField path="newRecord" type="MemoryRecord | JsonObject" required>
+  The replacement record.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor performing the revision.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason for the supersession.
+</ParamField>
+
+#### Example
+
+```typescript
+const updated = await client.supersede(
+  oldRecordId,
+  { ...oldRecord, payload: { updated: true } },
+  'agent-1',
+  'Corrected metadata based on new information'
+);
+```
+
+### fork
+
+```typescript
+fork(
+  sourceId: string,
+  forkedRecord: MemoryRecord | JsonObject,
+  actor: string,
+  rationale: string
+): Promise<MemoryRecord>
+```
+
+Fork a record into a conditional variant.
+
+<ParamField path="sourceId" type="string" required>
+  ID of the record to fork from.
+</ParamField>
+
+<ParamField path="forkedRecord" type="MemoryRecord | JsonObject" required>
+  The forked variant.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor performing the fork.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason for the fork.
+</ParamField>
+
+### retract
+
+```typescript
+retract(
+  recordId: string,
+  actor: string,
+  rationale: string
+): Promise<void>
+```
+
+Retract (soft-delete) a record.
+
+<ParamField path="recordId" type="string" required>
+  ID of the record to retract.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor performing the retraction.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason for the retraction.
+</ParamField>
+
+#### Example
+
+```typescript
+await client.retract(
+  recordId,
+  'agent-1',
+  'Record contained incorrect information'
+);
+```
+
+### merge
+
+```typescript
+merge(
+  recordIds: string[],
+  mergedRecord: MemoryRecord | JsonObject,
+  actor: string,
+  rationale: string
+): Promise<MemoryRecord>
+```
+
+Merge multiple records into a single record.
+
+<ParamField path="recordIds" type="string[]" required>
+  IDs of the records to merge.
+</ParamField>
+
+<ParamField path="mergedRecord" type="MemoryRecord | JsonObject" required>
+  The merged result.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor performing the merge.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason for the merge.
+</ParamField>
+
+### contest
+
+```typescript
+contest(
+  recordId: string,
+  contestingRef: string,
+  actor: string,
+  rationale: string
+): Promise<void>
+```
+
+Mark a record as contested due to conflicting evidence.
+
+<ParamField path="recordId" type="string" required>
+  ID of the record to contest.
+</ParamField>
+
+<ParamField path="contestingRef" type="string" required>
+  Reference to the conflicting evidence.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor contesting the record.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason for contesting.
+</ParamField>
+
+## Reinforcement Methods
+
+### reinforce
+
+```typescript
+reinforce(
+  recordId: string,
+  actor: string,
+  rationale: string
+): Promise<void>
+```
+
+Reinforce a record, boosting its salience.
+
+<ParamField path="recordId" type="string" required>
+  ID of the record to reinforce.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor performing the reinforcement.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason for the reinforcement.
+</ParamField>
+
+#### Example
+
+```typescript
+await client.reinforce(
+  recordId,
+  'agent-1',
+  'This information was crucial for solving the task'
+);
+```
+
+### penalize
+
+```typescript
+penalize(
+  recordId: string,
+  amount: number,
+  actor: string,
+  rationale: string
+): Promise<void>
+```
+
+Penalize a record, reducing its salience.
+
+<ParamField path="recordId" type="string" required>
+  ID of the record to penalize.
+</ParamField>
+
+<ParamField path="amount" type="number" required>
+  Penalty amount to subtract from salience.
+</ParamField>
+
+<ParamField path="actor" type="string" required>
+  Identifier of the actor applying the penalty.
+</ParamField>
+
+<ParamField path="rationale" type="string" required>
+  Human-readable reason for the penalty.
+</ParamField>
+
+#### Example
+
+```typescript
+await client.penalize(
+  recordId,
+  0.2,
+  'agent-1',
+  'Information was misleading'
+);
+```
+
+## Metrics
+
+### getMetrics
+
+```typescript
+getMetrics(): Promise<JsonObject>
+```
+
+Retrieve current metrics from the Membrane daemon.
+
+Returns a dictionary containing the metrics snapshot.
+
+#### Example
+
+```typescript
+const metrics = await client.getMetrics();
+console.log('Total records:', metrics.total_records);
+```
+
+## Lifecycle
+
+### close
+
+```typescript
+close(): void
+```
+
+Close the underlying gRPC channel and release resources.
+
+```typescript
+client.close();
+```
+
+## Type Definitions
+
+### MemoryRecord
+
+The atomic unit of storage in Membrane.
+
+```typescript
+interface MemoryRecord {
+  id: string;
+  type: MemoryType | string;
+  sensitivity: Sensitivity | string;
+  confidence: number;
+  salience: number;
+  scope?: string;
+  tags?: string[];
+  created_at?: string;
+  updated_at?: string;
+  lifecycle?: Lifecycle;
+  provenance?: Provenance;
+  relations?: Relation[];
+  payload?: unknown;
+  audit_log?: AuditEntry[];
+}
+```
+
+### TrustContext
+
+Controls access permissions during retrieval.
+
+```typescript
+interface TrustContext {
+  max_sensitivity: Sensitivity | string;
+  authenticated: boolean;
+  actor_id: string;
+  scopes: string[];
+}
+```
+
+Create a default trust context:
+
+```typescript
+import { createDefaultTrustContext } from '@gustycube/membrane';
+
+const trust = createDefaultTrustContext();
+// Returns: { max_sensitivity: 'low', authenticated: false, actor_id: '', scopes: [] }
+```
+
+### Enums
+
+#### MemoryType
+
+```typescript
+enum MemoryType {
+  EPISODIC = "episodic",
+  WORKING = "working",
+  SEMANTIC = "semantic",
+  COMPETENCE = "competence",
+  PLAN_GRAPH = "plan_graph"
+}
+```
+
+#### Sensitivity
+
+```typescript
+enum Sensitivity {
+  PUBLIC = "public",
+  LOW = "low",
+  MEDIUM = "medium",
+  HIGH = "high",
+  HYPER = "hyper"
+}
+```
+
+#### OutcomeStatus
+
+```typescript
+enum OutcomeStatus {
+  SUCCESS = "success",
+  FAILURE = "failure",
+  PARTIAL = "partial"
+}
+```
+
+## Snake Case Aliases
+
+All methods are available in both camelCase and snake_case:
+
+- `ingestEvent()` / `ingest_event()`
+- `ingestToolOutput()` / `ingest_tool_output()`
+- `ingestObservation()` / `ingest_observation()`
+- `ingestOutcome()` / `ingest_outcome()`
+- `ingestWorkingState()` / `ingest_working_state()`
+- `retrieveWithSelection()` / `retrieve_with_selection()`
+- `retrieveById()` / `retrieve_by_id()`
+- `getMetrics()` / `get_metrics()`
+
+## Error Handling
+
+The client throws `MembraneError` for gRPC errors:
+
+```typescript
+import { MembraneError } from '@gustycube/membrane';
+
+try {
+  await client.ingestEvent('test', 'ref');
+} catch (err) {
+  if (err instanceof MembraneError) {
+    console.error('Membrane error:', err.message);
+    console.error('Status code:', err.code);
+  }
+}
+```

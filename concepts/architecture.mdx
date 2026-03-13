@@ -1,0 +1,440 @@
+---
+title: Architecture
+description: Understand Membrane's three-plane architecture, storage model, and background jobs
+---
+
+## Overview
+
+Membrane is organized into three logical planes that handle ingestion, policy, and storage/retrieval. This separation allows for clean abstractions and makes the system auditable, testable, and extensible.
+
+```
++------------------+     +------------------+     +----------------------+
+|  Ingestion Plane |---->|   Policy Plane   |---->| Storage & Retrieval  |
++------------------+     +------------------+     +----------------------+
+        |                        |                         |
+   Events, tool            Classification,            SQLCipher (encrypted),
+   outputs, obs.,          sensitivity,               audit trails,
+   working state           decay profiles             trust-gated access
+```
+
+## The Three Planes
+
+### Ingestion Plane
+
+The **Ingestion Plane** receives raw inputs from agents and converts them into candidate memory records.
+
+**Input Types:**
+- Events (user inputs, tool calls, observations)
+- Tool outputs
+- Working state updates
+- Outcome reports
+
+**Responsibilities:**
+- Validate input payloads
+- Generate unique IDs
+- Create initial `MemoryRecord` structures
+- Forward candidates to Policy Plane
+
+**Code Example:**
+
+From `pkg/ingestion/ingestion.go`:
+
+```go
+type IngestEventRequest struct {
+    Source    string   // Agent or system identifier
+    EventKind string   // Type of event (e.g., "tool_call", "error")
+    Ref       string   // External reference ID
+    Summary   string   // Human-readable summary
+    Tags      []string // Categorization tags
+}
+```
+
+### Policy Plane
+
+The **Policy Plane** classifies candidates and assigns lifecycle metadata before persistence.
+
+**Responsibilities:**
+- Determine memory type (episodic, working, semantic, competence, plan_graph)
+- Assign sensitivity level (public, low, medium, high, hyper)
+- Set initial confidence and salience scores
+- Choose decay curve and parameters
+- Apply ingestion policies
+
+**Classification Logic:**
+
+From `pkg/ingestion/classifier.go` (simplified):
+
+```go
+func ClassifyMemoryType(kind string, tags []string) schema.MemoryType {
+    // Heuristic classification based on event kind and tags
+    switch kind {
+    case "tool_call", "observation", "error":
+        return schema.MemoryTypeEpisodic
+    case "task_state":
+        return schema.MemoryTypeWorking
+    case "preference", "fact":
+        return schema.MemoryTypeSemantic
+    case "procedure", "troubleshooting":
+        return schema.MemoryTypeCompetence
+    case "plan", "workflow":
+        return schema.MemoryTypePlanGraph
+    default:
+        return schema.MemoryTypeEpisodic
+    }
+}
+```
+
+**Sensitivity Assignment:**
+
+From `pkg/ingestion/policy.go`:
+
+```go
+type PolicyRule struct {
+    TagPattern       string
+    Sensitivity      schema.Sensitivity
+    DecayCurve       schema.DecayCurve
+    HalfLifeSeconds  int
+    DeletionPolicy   schema.DeletionPolicy
+}
+
+// Example policy: tag "secret" -> high sensitivity
+if containsTag(tags, "secret") {
+    sensitivity = schema.SensitivityHigh
+}
+```
+
+### Storage & Retrieval Plane
+
+The **Storage & Retrieval Plane** persists records, enforces decay, and serves queries.
+
+**Responsibilities:**
+- Persist `MemoryRecord` to SQLite with SQLCipher encryption
+- Maintain audit trails
+- Execute trust-gated retrieval queries
+- Apply decay and pruning
+- Support revision operations (supersede, fork, retract, merge)
+
+## Storage Model
+
+Membrane uses a hybrid storage approach optimized for both transactional integrity and retrieval performance.
+
+### Authoritative Store
+
+**SQLCipher-encrypted SQLite** serves as the source of truth for:
+
+- `MemoryRecord` metadata (ID, type, sensitivity, confidence, salience)
+- Lifecycle state (creation time, last reinforcement, decay curve)
+- Revision chains (supersedes, derived_from, contested_by)
+- Relations between records
+- Audit history
+
+**Why SQLite?**
+
+<CardGroup cols={2}>
+  <Card title="ACID Transactions" icon="database">
+    Atomic revision operations ensure partial updates are never visible
+  </Card>
+  
+  <Card title="Embedded" icon="hard-drive">
+    No external database server required, works as library or daemon
+  </Card>
+  
+  <Card title="Encrypted" icon="lock">
+    SQLCipher provides transparent encryption at rest
+  </Card>
+  
+  <Card title="Proven" icon="shield">
+    Battle-tested storage engine with decades of production use
+  </Card>
+</CardGroup>
+
+### Structured Payloads
+
+Type-specific schemas are stored as JSON within the authoritative store:
+
+```go
+type MemoryRecord struct {
+    ID          string          `json:"id"`
+    Type        MemoryType      `json:"type"`
+    Sensitivity Sensitivity     `json:"sensitivity"`
+    Confidence  float64         `json:"confidence"`
+    Salience    float64         `json:"salience"`
+    Payload     Payload         `json:"payload"` // JSON-encoded
+    // ... lifecycle, provenance, relations, audit log
+}
+```
+
+Payloads implement the `Payload` interface:
+
+```go
+type Payload interface {
+    PayloadKind() string
+    isPayload()
+}
+```
+
+See [Memory Types](/concepts/memory-types) for detailed payload schemas.
+
+### Relationship Graph
+
+Relations between records are stored as edges:
+
+```go
+type Relation struct {
+    Predicate string    `json:"predicate"` // e.g., "supersedes", "derived_from"
+    TargetID  string    `json:"target_id"`
+    Weight    float64   `json:"weight"`
+    CreatedAt time.Time `json:"created_at"`
+}
+```
+
+**Common relation predicates:**
+- `supersedes` — New record replaces old
+- `derived_from` — Record forked from source
+- `contested_by` — Conflicting evidence
+- `supports` — Corroborating evidence
+- `contradicts` — Opposing evidence
+
+## Background Jobs
+
+Membrane runs three background jobs to maintain memory health:
+
+### 1. Decay Job
+
+**Purpose:** Apply time-based salience decay to all non-pinned records.
+
+**Default Interval:** 1 hour
+
+**Algorithm:**
+
+From `pkg/decay/curves.go`:
+
+```go
+// Exponential decay: salience * exp(-ln(2) * elapsed / half_life)
+func ExponentialDecay(initialSalience, elapsedSeconds float64, profile schema.DecayProfile) float64 {
+    halfLife := float64(profile.HalfLifeSeconds)
+    if halfLife <= 0 {
+        return initialSalience
+    }
+    decayed := initialSalience * math.Exp(-math.Ln2 * elapsedSeconds / halfLife)
+    if decayed < profile.MinSalience {
+        return profile.MinSalience
+    }
+    return decayed
+}
+```
+
+**Decay Curves:**
+- **Exponential:** Gradual decay with half-life parameter
+- **Linear:** Constant decay rate over time
+- **Custom:** Implementation-defined behavior
+
+### 2. Pruning Job
+
+**Purpose:** Delete records whose salience has dropped to zero and have `auto_prune` policy.
+
+**Default Interval:** Runs immediately after decay job
+
+**Logic:**
+
+From `pkg/decay/decay.go`:
+
+```go
+func (s *Service) Prune(ctx context.Context) (int, error) {
+    records, _ := s.store.List(ctx, storage.ListOptions{})
+    
+    count := 0
+    for _, record := range records {
+        // Skip pinned records
+        if record.Lifecycle.Pinned {
+            continue
+        }
+        
+        // Skip if deletion policy is not auto_prune
+        if record.Lifecycle.DeletionPolicy != schema.DeletionPolicyAutoPrune {
+            continue
+        }
+        
+        // Prune if salience <= MinSalience AND < 0.001
+        floor := record.Lifecycle.Decay.MinSalience
+        if record.Salience <= floor && record.Salience < 0.001 {
+            s.deletePruned(ctx, record.ID)
+            count++
+        }
+    }
+    
+    return count, nil
+}
+```
+
+<Note>
+  Pinned records (with `Lifecycle.Pinned = true`) are never decayed or pruned, regardless of salience.
+</Note>
+
+### 3. Consolidation Job
+
+**Purpose:** Extract durable knowledge from episodic memory.
+
+**Default Interval:** 6 hours
+
+**Sub-Consolidators:**
+
+From `pkg/consolidation/consolidation.go`:
+
+```go
+type ConsolidationResult struct {
+    EpisodicCompressed  int // Episodic records compressed
+    SemanticExtracted   int // New semantic facts
+    CompetenceExtracted int // New competence procedures
+    PlanGraphsExtracted int // New plan graphs
+    DuplicatesResolved  int // Duplicates reinforced
+}
+
+func (s *Service) RunAll(ctx context.Context) (*ConsolidationResult, error) {
+    // 1. Compress old episodic records
+    episodicCount, _ := s.episodic.Consolidate(ctx)
+    
+    // 2. Extract semantic facts from observations
+    semanticCount, semanticReinforced, _ := s.semantic.Consolidate(ctx)
+    
+    // 3. Extract competence from repeated patterns
+    competenceCount, competenceReinforced, _ := s.competence.Consolidate(ctx)
+    
+    // 4. Extract plan graphs from tool sequences
+    planGraphCount, _ := s.plangraph.Consolidate(ctx)
+    
+    return &ConsolidationResult{
+        EpisodicCompressed:  episodicCount,
+        SemanticExtracted:   semanticCount,
+        CompetenceExtracted: competenceCount,
+        PlanGraphsExtracted: planGraphCount,
+        DuplicatesResolved:  semanticReinforced + competenceReinforced,
+    }, nil
+}
+```
+
+**Consolidation Pipelines:**
+
+<Steps>
+  <Step title="Episodic Compression">
+    Reduce salience of old episodic records (&gt; 7 days) since they've served their purpose as evidence
+  </Step>
+  
+  <Step title="Semantic Extraction">
+    Analyze episodic observations to extract subject-predicate-object facts
+  </Step>
+  
+  <Step title="Competence Extraction">
+    Identify repeated successful patterns and create procedure records
+  </Step>
+  
+  <Step title="Plan Graph Extraction">
+    Convert tool call sequences into reusable directed graphs
+  </Step>
+</Steps>
+
+## Security Model
+
+Membrane implements defense-in-depth security:
+
+### Encryption at Rest
+
+**SQLCipher** encrypts the entire SQLite database using AES-256:
+
+```go
+import "github.com/mutecomm/go-sqlcipher/v4"
+
+// Applied at database open
+PRAGMA key = 'your-encryption-key';
+```
+
+### Trust-Aware Retrieval
+
+Records are filtered by sensitivity level during retrieval:
+
+```go
+type TrustContext struct {
+    MaxSensitivity schema.Sensitivity
+    Authenticated  bool
+    ActorID        string
+    Scopes         []string
+}
+
+func (tc *TrustContext) Allows(record *schema.MemoryRecord) bool {
+    recordLevel := SensitivityLevel(record.Sensitivity)
+    maxLevel := SensitivityLevel(tc.MaxSensitivity)
+    return recordLevel <= maxLevel
+}
+```
+
+**Redacted Retrieval:**
+
+Records exactly one level above trust threshold are returned with metadata only:
+
+```go
+func (tc *TrustContext) AllowsRedacted(record *schema.MemoryRecord) bool {
+    recordLevel := SensitivityLevel(record.Sensitivity)
+    maxLevel := SensitivityLevel(tc.MaxSensitivity)
+    return recordLevel == maxLevel + 1
+}
+```
+
+### Authentication & Rate Limiting
+
+- **API Key:** Bearer token in `authorization` metadata
+- **TLS:** Optional TLS for gRPC connections
+- **Rate Limiting:** Token bucket limiter at configurable requests/second
+
+## Observability
+
+Membrane exposes metrics via the `GetMetrics` gRPC endpoint:
+
+```json
+{
+  "total_records": 142,
+  "records_by_type": {
+    "episodic": 80,
+    "semantic": 35,
+    "competence": 15,
+    "plan_graph": 7,
+    "working": 5
+  },
+  "avg_salience": 0.62,
+  "avg_confidence": 0.78,
+  "memory_growth_rate": 0.15,
+  "retrieval_usefulness": 0.42,
+  "competence_success_rate": 0.85,
+  "plan_reuse_frequency": 2.3,
+  "revision_rate": 0.08
+}
+```
+
+**Key Metrics:**
+
+| Metric | Description |
+|--------|-------------|
+| `memory_growth_rate` | Fraction of records created in last 24 hours |
+| `retrieval_usefulness` | Ratio of reinforce actions to total audit entries |
+| `competence_success_rate` | Average success rate across competence records |
+| `plan_reuse_frequency` | Average execution count across plan graph records |
+| `revision_rate` | Fraction of audit entries that are revisions |
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Memory Types" icon="database" href="/concepts/memory-types">
+    Explore the five memory types and their schemas
+  </Card>
+  
+  <Card title="Revision Operations" icon="arrows-rotate" href="/concepts/revision-operations">
+    Learn how to supersede, fork, retract, merge, and contest records
+  </Card>
+  
+  <Card title="Trust & Sensitivity" icon="shield" href="/concepts/trust-and-sensitivity">
+    Understand sensitivity levels and trust-gated retrieval
+  </Card>
+  
+  <Card title="Decay & Consolidation" icon="clock" href="/concepts/decay-and-consolidation">
+    Deep dive into salience decay and knowledge extraction
+  </Card>
+</CardGroup>

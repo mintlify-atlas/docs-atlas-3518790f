@@ -1,0 +1,478 @@
+---
+title: 'Evaluation'
+description: 'Test suites, recall regression checks, and eval commands for validating memory substrate behavior'
+---
+
+## Overview
+
+Membrane includes comprehensive evaluation tools to ensure that the learning substrate behaves correctly and that changes do not introduce regressions. The test suite covers ingestion, retrieval ordering, revision semantics, decay mechanics, trust gating, competence learning, plan graph operations, consolidation, metrics, and invariant checking.
+
+<Info>
+**Testing Philosophy**: Membrane treats recall tests as scenario-level regression guards rather than universal benchmarks. The system does not implement vector similarity search internally, so end-to-end recall depends on the retrieval backend and agent policy.
+</Info>
+
+## Test Suite Structure
+
+The evaluation suite is organized into targeted capability tests:
+
+| Test Target | Command | Test File Pattern |
+|-------------|---------|------------------|
+| **Memory Type Handling** | `make eval-typed` | `TestEvalTypedMemory` |
+| **Revision Semantics** | `make eval-revision` | `TestEvalRevisionLifecycle` |
+| **Decay and Reinforcement** | `make eval-decay` | `TestEvalDecayAndReinforce` |
+| **Trust-Gated Retrieval** | `make eval-trust` | `TestEvalTrustGating` |
+| **Competence Learning** | `make eval-competence` | `TestEvalCompetenceSelection` |
+| **Plan Graph Operations** | `make eval-plan` | `TestEvalPlanGraphSelection` |
+| **Consolidation** | `make eval-consolidation` | `TestEvalConsolidation` |
+| **Observability Metrics** | `make eval-metrics` | `TestEvalMetrics` |
+| **System Invariants** | `make eval-invariants` | `TestEval(Ingestion\|Retrieval\|Revision\|Trust)` |
+| **gRPC Endpoint Coverage** | `make eval-grpc` | `TestEvalGRPC` |
+
+## Running Evaluations
+
+### Quick Start
+
+<CodeGroup>
+```bash Run All Tests
+# Execute the full Go test suite (unit + integration)
+make eval-all
+
+# This runs:
+# 1. All Go tests in ./tests
+# 2. Vector-aware end-to-end evaluation (if Python deps installed)
+```
+
+```bash Run Specific Capability
+# Test competence extraction and selection
+make eval-competence
+
+# Test plan graph operations
+make eval-plan
+
+# Test decay curves and pruning
+make eval-decay
+```
+
+```bash Direct Go Test Invocation
+# Run all tests with verbose output
+go test ./tests -v
+
+# Run specific test by name
+go test ./tests -run TestEvalCompetenceSelection -v
+
+# Run with race detector
+go test ./tests -race
+```
+</CodeGroup>
+
+### Makefile Commands
+
+From the repository root, the following commands are available:
+
+<CodeGroup>
+```makefile Makefile: Tests and Evaluation
+# Build the daemon
+make build
+
+# Run all unit tests
+make test
+
+# Run vector-aware end-to-end eval (requires Python)
+make eval
+make eval-vector  # Alias for eval
+
+# Targeted capability evals
+make eval-typed          # Memory type handling
+make eval-revision       # Revision semantics
+make eval-decay          # Decay curves and pruning
+make eval-trust          # Trust-gated retrieval
+make eval-competence     # Competence learning
+make eval-plan           # Plan graph operations
+make eval-consolidation  # Episodic consolidation
+make eval-metrics        # Observability metrics
+make eval-invariants     # System invariants
+make eval-grpc           # gRPC endpoint coverage
+
+# Run everything
+make eval-all            # All Go tests + vector eval
+```
+</CodeGroup>
+
+## Recall Regression Checks
+
+The recall regression suite ensures that retrieval quality does not degrade across versions:
+
+<CodeGroup>
+```bash Recall Tests
+# Run recall-at-k tests
+go test ./tests -run TestRetrievalRecallAtK
+```
+</CodeGroup>
+
+These tests verify that:
+- Relevant records appear in the top-k results
+- Salience and confidence affect ranking correctly
+- Trust gating does not inadvertently hide valid results
+- Decay does not prematurely remove useful records
+
+<Warning>
+Recall tests depend on the retrieval implementation. If using a custom vector backend, you may need to adjust thresholds or test data to match your similarity search behavior.
+</Warning>
+
+## Vector-Aware End-to-End Metrics
+
+The optional vector evaluation suite provides detailed recall, precision, MRR, and NDCG metrics:
+
+### Prerequisites
+
+<CodeGroup>
+```bash Install Python Dependencies
+python3 -m pip install -r tools/eval/requirements.txt
+```
+</CodeGroup>
+
+The `requirements.txt` typically includes:
+- `numpy` for numerical computations
+- `sklearn` for evaluation metrics
+- `grpcio` for gRPC client
+- `protobuf` for message serialization
+
+### Running Vector Eval
+
+<CodeGroup>
+```bash Execute Vector Evaluation
+make eval
+
+# Or directly:
+./tools/eval/run.sh
+```
+</CodeGroup>
+
+### Metrics Computed
+
+The vector eval script computes:
+
+<ParamField path="recall@k" type="float">
+  **Formula**: `relevant_in_topk / total_relevant`
+  
+  Fraction of relevant records that appear in the top-k results. Higher is better.
+</ParamField>
+
+<ParamField path="precision@k" type="float">
+  **Formula**: `relevant_in_topk / k`
+  
+  Fraction of top-k results that are relevant. Higher is better.
+</ParamField>
+
+<ParamField path="mrr@k" type="float">
+  **Formula**: `1 / rank_of_first_relevant`
+  
+  Mean reciprocal rank measures how quickly the first relevant result appears. Higher is better.
+</ParamField>
+
+<ParamField path="ndcg@k" type="float">
+  **Formula**: Normalized discounted cumulative gain at k
+  
+  Accounts for position of relevant results with logarithmic discounting. Higher is better.
+</ParamField>
+
+### Threshold Enforcement
+
+By default, the vector eval enforces minimum thresholds. Override via environment variables:
+
+<CodeGroup>
+```bash Environment Variable Overrides
+export MEMBRANE_EVAL_MIN_RECALL=0.90
+export MEMBRANE_EVAL_MIN_PRECISION=0.20
+export MEMBRANE_EVAL_MIN_MRR=0.90
+export MEMBRANE_EVAL_MIN_NDCG=0.90
+
+make eval
+```
+</CodeGroup>
+
+The evaluation will **fail** if computed metrics fall below these thresholds.
+
+### Latest Results
+
+From README.md (local run, Feb 5, 2026):
+
+<CardGroup cols={2}>
+  <Card title="Unit/Integration" icon="flask">
+    22 top-level eval tests + 7 subtests = **29 test cases**
+    
+    0 failures (~0.40s)
+  </Card>
+  <Card title="Vector E2E" icon="chart-line">
+    35 records, 18 queries
+    
+    - **Recall@k**: 1.000
+    - **Precision@k**: 0.267
+    - **MRR@k**: 0.956
+    - **NDCG@k**: 0.955
+  </Card>
+</CardGroup>
+
+<Info>
+These results reflect a specific test dataset and retrieval configuration. Your results may vary based on vector backend, embedding model, and consolidation settings.
+</Info>
+
+## Test Coverage by Component
+
+### Ingestion Tests
+
+Verify that all ingestion APIs produce valid memory records:
+
+- `IngestEvent` creates episodic records
+- `IngestToolOutput` captures tool invocations
+- `IngestObservation` produces semantic records
+- `IngestOutcome` updates episodic outcomes
+- `IngestWorkingState` manages task state
+
+<CodeGroup>
+```bash Run Ingestion Tests
+go test ./tests -run TestEvalIngestion
+```
+</CodeGroup>
+
+### Retrieval Tests
+
+Validate layered retrieval with trust context:
+
+- Records are filtered by sensitivity
+- Salience affects ranking
+- Memory types are correctly filtered
+- Redaction works for records one level above trust threshold
+
+<CodeGroup>
+```bash Run Retrieval Tests
+go test ./tests -run TestEvalRetrieval
+```
+</CodeGroup>
+
+### Revision Tests
+
+Ensure revision operations maintain correctness:
+
+- `Supersede` creates chains and updates relationships
+- `Fork` produces conditional variants
+- `Retract` marks records as withdrawn
+- `Merge` combines multiple records
+- `Contest` marks conflicting evidence
+- Audit trails are complete
+
+<CodeGroup>
+```bash Run Revision Tests
+make eval-revision
+```
+</CodeGroup>
+
+### Decay and Reinforcement Tests
+
+Validate salience mechanics:
+
+- Exponential decay follows correct curve
+- Linear decay decreases at expected rate
+- Reinforcement increases salience
+- Penalization decreases salience
+- Pinned records are immune to decay
+- Auto-pruning removes low-salience records
+
+<CodeGroup>
+```bash Run Decay Tests
+make eval-decay
+```
+</CodeGroup>
+
+### Trust Gating Tests
+
+Confirm sensitivity-based filtering:
+
+- Public records are always visible
+- Low sensitivity requires authenticated context
+- Medium/high sensitivity requires elevated trust
+- Records one level above threshold are redacted
+- Hyper-sensitive records are hidden entirely
+
+<CodeGroup>
+```bash Run Trust Tests
+make eval-trust
+```
+</CodeGroup>
+
+### Competence Learning Tests
+
+Validate competence extraction and selection:
+
+- Patterns are recognized after `minPatternOccurrences`
+- Only successful episodes contribute
+- Tool signatures are generated correctly
+- Reinforcement updates salience
+- Performance stats are tracked
+- Selection considers success rate and conditions
+
+<CodeGroup>
+```bash Run Competence Tests
+make eval-competence
+```
+</CodeGroup>
+
+### Plan Graph Tests
+
+Ensure plan extraction and reuse:
+
+- Complex tool graphs (≥3 nodes) are extracted
+- DAG structure is preserved
+- Execution metrics are tracked
+- Reuse frequency increases with repeated use
+- Selection matches intent and constraints
+
+<CodeGroup>
+```bash Run Plan Graph Tests
+make eval-plan
+```
+</CodeGroup>
+
+### Consolidation Tests
+
+Verify automatic learning pipeline:
+
+- Episodic compression reduces salience after age threshold
+- Semantic extraction creates facts from observations
+- Competence extraction finds repeated patterns
+- Plan graph extraction captures complex solutions
+- Duplicate detection avoids redundant extraction
+
+<CodeGroup>
+```bash Run Consolidation Tests
+make eval-consolidation
+```
+</CodeGroup>
+
+### Metrics Tests
+
+Confirm observability data accuracy:
+
+- Total counts are correct
+- Salience distribution buckets are accurate
+- Memory growth rate reflects recent creations
+- Retrieval usefulness tracks reinforcements
+- Competence success rate averages correctly
+- Plan reuse frequency measures execution counts
+- Revision rate identifies knowledge updates
+
+<CodeGroup>
+```bash Run Metrics Tests
+make eval-metrics
+```
+</CodeGroup>
+
+### gRPC Endpoint Tests
+
+Exercise all gRPC methods:
+
+- All 15 gRPC methods are callable
+- Error handling works correctly
+- Authentication is enforced when configured
+- Rate limiting functions
+- TLS connections succeed
+
+<CodeGroup>
+```bash Run gRPC Tests
+make eval-grpc
+```
+</CodeGroup>
+
+## Continuous Integration
+
+The CI workflow (`.github/workflows/ci.yml`) runs:
+
+1. **Build**: `make build`
+2. **Unit Tests**: `make test`
+3. **Eval Suite**: `make eval-all`
+4. **TypeScript Client Tests**: `cd clients/typescript && npm test`
+5. **Python Client Tests**: `cd clients/python && pytest`
+
+All tests must pass before a PR can be merged.
+
+## Writing New Tests
+
+When adding new features, follow these patterns:
+
+<Steps>
+  <Step title="Create Test File">
+    Add test in `tests/` directory with descriptive name (e.g., `eval_newfeature_test.go`)
+  </Step>
+  <Step title="Use TestEval Prefix">
+    Name test functions `TestEvalNewFeature` to match the eval suite pattern
+  </Step>
+  <Step title="Add Makefile Target">
+    Create a new target in `Makefile`:
+    ```makefile
+    eval-newfeature:
+        $(GO) test ./tests -run TestEvalNewFeature
+    ```
+  </Step>
+  <Step title="Document Test Purpose">
+    Add comments explaining what invariant or behavior is being validated
+  </Step>
+  <Step title="Update eval-all">
+    Ensure `make eval-all` includes your new test
+  </Step>
+</Steps>
+
+## Debugging Test Failures
+
+### Enable Verbose Output
+
+<CodeGroup>
+```bash Verbose Test Execution
+go test ./tests -v -run TestEvalCompetence
+```
+</CodeGroup>
+
+### Run Single Test
+
+<CodeGroup>
+```bash Isolate Failing Test
+go test ./tests -run TestEvalCompetenceSelection/specific_subtest -v
+```
+</CodeGroup>
+
+### Check Test Database
+
+Tests create temporary databases. To inspect state:
+
+<CodeGroup>
+```go Preserve Test Database
+func TestDebug(t *testing.T) {
+    cfg := membrane.DefaultConfig()
+    cfg.DBPath = "/tmp/membrane-debug.db"  // Fixed path
+    m, err := membrane.New(cfg)
+    // ... run test
+    // Database persists after test for inspection
+}
+```
+</CodeGroup>
+
+## Performance Benchmarks
+
+While not part of the main eval suite, you can benchmark critical operations:
+
+<CodeGroup>
+```bash Run Benchmarks
+go test ./tests -bench=. -benchmem
+```
+</CodeGroup>
+
+Common benchmarks to add:
+- Ingestion throughput (records/sec)
+- Retrieval latency (ms)
+- Consolidation runtime (sec)
+- Metrics collection time (ms)
+
+## Related Sections
+
+- [Competence Learning](/advanced/competence-learning) - Understand competence eval tests
+- [Plan Graphs](/advanced/plan-graphs) - Understand plan graph eval tests
+- [Observability](/advanced/observability) - Understand metrics eval tests

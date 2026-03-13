@@ -1,0 +1,422 @@
+---
+title: 'Observability'
+description: 'Monitor memory substrate health and learning effectiveness with built-in metrics'
+---
+
+## Overview
+
+Membrane exposes behavioral metrics that allow you to assess whether the learning system is improving agent performance or degrading it. The `GetMetrics` endpoint returns a point-in-time snapshot of memory state, learning effectiveness, and revision activity.
+
+<Info>
+**RFC Foundation**: Observability metrics are defined in RFC section 15.10 and implemented in `pkg/metrics/metrics.go`.
+</Info>
+
+## GetMetrics Endpoint
+
+The metrics endpoint is available via gRPC:
+
+<CodeGroup>
+```go Go Client
+import "github.com/GustyCube/membrane/pkg/membrane"
+
+metrics, err := m.GetMetrics(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Total records: %d\n", metrics.TotalRecords)
+fmt.Printf("Competence success rate: %.2f\n", metrics.CompetenceSuccessRate)
+```
+
+```typescript TypeScript Client
+import { MembraneClient } from "@gustycube/membrane";
+
+const client = new MembraneClient("localhost:9090", { apiKey: "your-key" });
+const metrics = await client.getMetrics();
+
+console.log(`Total records: ${metrics.total_records}`);
+console.log(`Plan reuse frequency: ${metrics.plan_reuse_frequency}`);
+```
+
+```python Python Client
+from membrane import MembraneClient
+
+client = MembraneClient("localhost:9090", api_key="your-key")
+metrics = client.get_metrics()
+
+print(f"Memory growth rate: {metrics.memory_growth_rate:.2%}")
+print(f"Retrieval usefulness: {metrics.retrieval_usefulness:.2f}")
+```
+</CodeGroup>
+
+## Metrics Snapshot Structure
+
+The metrics snapshot returns a comprehensive view of the memory substrate:
+
+```json
+{
+  "collected_at": "2026-02-05T12:00:00Z",
+  "total_records": 142,
+  "records_by_type": {
+    "episodic": 80,
+    "semantic": 35,
+    "competence": 15,
+    "plan_graph": 7,
+    "working": 5
+  },
+  "avg_salience": 0.62,
+  "avg_confidence": 0.78,
+  "salience_distribution": {
+    "0.0-0.2": 12,
+    "0.2-0.4": 18,
+    "0.4-0.6": 30,
+    "0.6-0.8": 45,
+    "0.8-1.0": 37
+  },
+  "active_records": 130,
+  "pinned_records": 3,
+  "total_audit_entries": 890,
+  "memory_growth_rate": 0.15,
+  "retrieval_usefulness": 0.42,
+  "competence_success_rate": 0.85,
+  "plan_reuse_frequency": 2.3,
+  "revision_rate": 0.08
+}
+```
+
+## Core Metrics
+
+### Basic Inventory
+
+<ParamField path="collected_at" type="timestamp">
+  UTC timestamp when metrics were collected
+</ParamField>
+
+<ParamField path="total_records" type="integer">
+  Total number of memory records across all types
+</ParamField>
+
+<ParamField path="records_by_type" type="object">
+  Breakdown of records by memory type:
+  - `episodic`: Raw experience captures
+  - `semantic`: Stable facts and preferences
+  - `competence`: Learned procedures
+  - `plan_graph`: Reusable solution structures
+  - `working`: Active task state
+</ParamField>
+
+<ParamField path="active_records" type="integer">
+  Number of records with salience > 0 (not fully decayed)
+</ParamField>
+
+<ParamField path="pinned_records" type="integer">
+  Number of records marked as pinned (immune to automatic pruning)
+</ParamField>
+
+<ParamField path="total_audit_entries" type="integer">
+  Total number of audit entries across all records (tracks all operations: create, reinforce, revise, etc.)
+</ParamField>
+
+### Salience and Confidence
+
+<ParamField path="avg_salience" type="float">
+  Average salience score across all records (0.0-1.0)
+  
+  **What it means**: Higher values indicate more "fresh" memory that has been recently reinforced. Declining average salience suggests memory is aging without reinforcement.
+</ParamField>
+
+<ParamField path="avg_confidence" type="float">
+  Average confidence score across all records (0.0-1.0)
+  
+  **What it means**: Higher values indicate more certain knowledge. Low confidence may indicate conflicting evidence or uncertain consolidations.
+</ParamField>
+
+<ParamField path="salience_distribution" type="object">
+  Histogram of salience scores across five buckets:
+  - `0.0-0.2`: Near-zero salience (candidates for pruning)
+  - `0.2-0.4`: Low salience
+  - `0.4-0.6`: Medium salience
+  - `0.6-0.8`: High salience
+  - `0.8-1.0`: Very high salience (recently reinforced)
+  
+  **What to monitor**: 
+  - Many records in 0.0-0.2 → Consider running consolidation or adjusting decay parameters
+  - Most records in 0.8-1.0 → Active learning, frequent reinforcement
+</ParamField>
+
+## RFC 15.10 Behavioral Metrics
+
+These metrics assess learning effectiveness and memory evolution:
+
+### Memory Growth Rate
+
+<ParamField path="memory_growth_rate" type="float">
+  Fraction of records created in the last 24 hours
+  
+  **Formula**: `records_created_in_24h / total_records`
+  
+  **What it means**:
+  - High growth rate (&gt;0.2): Rapid ingestion, may need consolidation tuning
+  - Low growth rate (&lt;0.05): Steady state or insufficient learning signal
+  - Negative trend over time: Pruning is outpacing ingestion
+</ParamField>
+
+<Accordion title="Implementation Details">
+```go Source: pkg/metrics/metrics.go:107-110
+cutoff24h := time.Now().UTC().Add(-24 * time.Hour)
+if rec.CreatedAt.After(cutoff24h) {
+    recentRecords++
+}
+```
+</Accordion>
+
+### Retrieval Usefulness
+
+<ParamField path="retrieval_usefulness" type="float">
+  Ratio of reinforce actions to total audit entries
+  
+  **Formula**: `reinforce_count / total_audit_count`
+  
+  **What it means**:
+  - High usefulness (&gt;0.4): Retrieved memory frequently contributes to success
+  - Low usefulness (&lt;0.1): Retrieval is not providing value; consider improving selection
+  - This metric directly measures whether agents are finding and using memory effectively
+</ParamField>
+
+<Accordion title="Implementation Details">
+```go Source: pkg/metrics/metrics.go:112-121
+for _, entry := range rec.AuditLog {
+    totalAuditCount++
+    if entry.Action == schema.AuditActionReinforce {
+        reinforceCount++
+    }
+}
+// ...
+snap.RetrievalUsefulness = float64(reinforceCount) / float64(totalAuditCount)
+```
+</Accordion>
+
+### Competence Success Rate
+
+<ParamField path="competence_success_rate" type="float">
+  Average success rate across all competence records
+  
+  **Formula**: `sum(competence.success_rate) / competence_count`
+  
+  **What it means**:
+  - High success rate (&gt;0.8): Learned procedures are reliable
+  - Low success rate (&lt;0.5): Procedures are failing; may need revision or better pattern recognition
+  - Declining trend: Procedures are becoming outdated as environment changes
+</ParamField>
+
+<Accordion title="Implementation Details">
+```go Source: pkg/metrics/metrics.go:124-127
+if cp, ok := rec.Payload.(*schema.CompetencePayload); ok && cp.Performance != nil {
+    competenceSuccessSum += cp.Performance.SuccessRate
+    competenceCount++
+}
+```
+
+Success rate is computed within each competence record as:
+```go
+success_rate = success_count / (success_count + failure_count)
+```
+</Accordion>
+
+### Plan Reuse Frequency
+
+<ParamField path="plan_reuse_frequency" type="float">
+  Average execution count across all plan graph records
+  
+  **Formula**: `sum(plan.execution_count) / plan_count`
+  
+  **What it means**:
+  - High frequency (&gt;2.0): Agents are successfully reusing learned solution structures
+  - Low frequency (~1.0): Plans are extracted but not reused; selection may need improvement
+  - This metric indicates whether the system is truly learning reusable patterns
+</ParamField>
+
+<Accordion title="Implementation Details">
+```go Source: pkg/metrics/metrics.go:129-133
+if pg, ok := rec.Payload.(*schema.PlanGraphPayload); ok && pg.Metrics != nil {
+    planExecSum += float64(pg.Metrics.ExecutionCount)
+    planCount++
+}
+snap.PlanReuseFrequency = planExecSum / float64(planCount)
+```
+</Accordion>
+
+### Revision Rate
+
+<ParamField path="revision_rate" type="float">
+  Fraction of audit entries that are revisions (supersede, fork, merge)
+  
+  **Formula**: `revision_count / total_audit_count`
+  
+  **What it means**:
+  - High revision rate (&gt;0.15): Frequent knowledge updates; may indicate conflicting information
+  - Low revision rate (&lt;0.05): Stable knowledge; consolidation is producing consistent results
+  - This metric tracks how often memory is being corrected or refined
+</ParamField>
+
+<Accordion title="Implementation Details">
+```go Source: pkg/metrics/metrics.go:118-121
+if entry.Action == schema.AuditActionRevise || 
+   entry.Action == schema.AuditActionFork || 
+   entry.Action == schema.AuditActionMerge {
+    revisionCount++
+}
+```
+</Accordion>
+
+## Monitoring Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Track Trends" icon="chart-line">
+    Monitor metrics over time rather than absolute values. A declining retrieval usefulness score indicates degrading performance.
+  </Card>
+  <Card title="Alert on Anomalies" icon="bell">
+    Set thresholds for critical metrics:
+    - `retrieval_usefulness < 0.1`
+    - `competence_success_rate < 0.5`
+    - `memory_growth_rate > 0.5`
+  </Card>
+  <Card title="Correlate with Agent Performance" icon="link">
+    Compare metric trends with task success rates to validate that learning is improving outcomes.
+  </Card>
+  <Card title="Visualize Salience Distribution" icon="chart-bar">
+    Plot the salience histogram to identify memory health issues (too much decay, insufficient reinforcement).
+  </Card>
+</CardGroup>
+
+## Metric Collection Overhead
+
+The metrics collector scans all records in memory to compute the snapshot:
+
+<CodeGroup>
+```go Source: pkg/metrics/metrics.go:44-48
+func (c *Collector) Collect(ctx context.Context) (*Snapshot, error) {
+    records, err := c.store.List(ctx, storage.ListOptions{})
+    if err != nil {
+        return nil, fmt.Errorf("metrics: list records: %w", err)
+    }
+    // ... iterate over all records
+}
+```
+</CodeGroup>
+
+**Performance considerations**:
+- Metrics collection is O(n) in the number of records
+- With 10,000 records, collection typically takes &lt;100ms
+- Metrics are computed on-demand, not cached
+- For very large deployments (&gt;100k records), consider sampling or periodic precomputation
+
+## Integration with External Monitoring
+
+You can export Membrane metrics to external systems:
+
+<CodeGroup>
+```typescript Prometheus Exporter Example
+import { MembraneClient } from "@gustycube/membrane";
+import { Registry, Gauge } from "prom-client";
+
+const register = new Registry();
+const client = new MembraneClient("localhost:9090");
+
+const totalRecords = new Gauge({
+  name: "membrane_total_records",
+  help: "Total number of memory records",
+  registers: [register],
+});
+
+const retrievalUsefulness = new Gauge({
+  name: "membrane_retrieval_usefulness",
+  help: "Ratio of reinforce actions to total audit entries",
+  registers: [register],
+});
+
+const competenceSuccessRate = new Gauge({
+  name: "membrane_competence_success_rate",
+  help: "Average success rate across competence records",
+  registers: [register],
+});
+
+setInterval(async () => {
+  const metrics = await client.getMetrics();
+  totalRecords.set(metrics.total_records);
+  retrievalUsefulness.set(metrics.retrieval_usefulness);
+  competenceSuccessRate.set(metrics.competence_success_rate);
+}, 60000); // Update every minute
+```
+
+```python Datadog Integration Example
+from membrane import MembraneClient
+from datadog import statsd
+import time
+
+client = MembraneClient("localhost:9090", api_key="your-key")
+
+while True:
+    metrics = client.get_metrics()
+    
+    statsd.gauge("membrane.total_records", metrics.total_records)
+    statsd.gauge("membrane.memory_growth_rate", metrics.memory_growth_rate)
+    statsd.gauge("membrane.retrieval_usefulness", metrics.retrieval_usefulness)
+    statsd.gauge("membrane.competence_success_rate", metrics.competence_success_rate)
+    statsd.gauge("membrane.plan_reuse_frequency", metrics.plan_reuse_frequency)
+    
+    time.sleep(60)
+```
+</CodeGroup>
+
+## Debugging Memory Issues
+
+Use metrics to diagnose common problems:
+
+### Problem: Low Retrieval Usefulness
+
+<Steps>
+  <Step title="Check Selection Logic">
+    Verify that `selection_confidence_threshold` is not set too high
+  </Step>
+  <Step title="Review Ingestion Quality">
+    Ensure episodic records contain useful tags and summaries for retrieval
+  </Step>
+  <Step title="Validate Trust Context">
+    Confirm retrieval queries are not being blocked by sensitivity filters
+  </Step>
+</Steps>
+
+### Problem: High Memory Growth Rate
+
+<Steps>
+  <Step title="Increase Consolidation Frequency">
+    Reduce `consolidation_interval` to extract more knowledge from episodic memory
+  </Step>
+  <Step title="Enable Auto-Pruning">
+    Set `deletion_policy: auto_prune` on episodic records
+  </Step>
+  <Step title="Adjust Decay Parameters">
+    Lower `decay_interval` or reduce `half_life_seconds` to prune faster
+  </Step>
+</Steps>
+
+### Problem: Low Competence Success Rate
+
+<Steps>
+  <Step title="Review Procedure Extraction">
+    Check that consolidation is extracting meaningful patterns
+  </Step>
+  <Step title="Update Stale Procedures">
+    Use `Supersede` or `Fork` to replace outdated competence records
+  </Step>
+  <Step title="Increase Pattern Threshold">
+    Raise `minPatternOccurrences` to require more evidence before extraction
+  </Step>
+</Steps>
+
+## Related Sections
+
+- [Competence Learning](/advanced/competence-learning) - Understand competence success rate metric
+- [Plan Graphs](/advanced/plan-graphs) - Understand plan reuse frequency metric
+- [Evaluation](/advanced/evaluation) - Test metrics collection with `eval-metrics`

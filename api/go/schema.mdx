@@ -1,0 +1,449 @@
+---
+title: Schema
+description: Core memory record types and enumerations
+---
+
+## Overview
+
+The `schema` package defines the core data structures for the memory substrate as specified in RFC 15A (Schema Appendix). All memory records share a common structure with type-specific payloads.
+
+## MemoryRecord
+
+The atomic unit of storage in the memory substrate.
+
+```go
+package schema
+
+type MemoryRecord struct {
+	// ID is a globally unique identifier (UUID recommended).
+	ID string `json:"id"`
+
+	// Type declares the memory type (episodic, working, semantic, competence, plan_graph).
+	Type MemoryType `json:"type"`
+
+	// Sensitivity is the sensitivity classification for access control.
+	Sensitivity Sensitivity `json:"sensitivity"`
+
+	// Confidence is the epistemic confidence in this record.
+	// Value range: [0, 1]
+	Confidence float64 `json:"confidence"`
+
+	// Salience is the decay-weighted importance score.
+	// Value range: [0, +inf)
+	Salience float64 `json:"salience"`
+
+	// Scope defines the visibility scope (implementation-defined).
+	// Examples: user, device, project, workspace, global.
+	Scope string `json:"scope,omitempty"`
+
+	// Tags are free-form labels for categorization and retrieval.
+	Tags []string `json:"tags,omitempty"`
+
+	// CreatedAt is the timestamp when this record was created.
+	CreatedAt time.Time `json:"created_at"`
+
+	// UpdatedAt is the timestamp when this record was last updated.
+	UpdatedAt time.Time `json:"updated_at"`
+
+	// Lifecycle contains decay, reinforcement, and deletion metadata.
+	Lifecycle Lifecycle `json:"lifecycle"`
+
+	// Provenance links this record to its source events or artifacts.
+	Provenance Provenance `json:"provenance"`
+
+	// Relations are graph edges to other MemoryRecords.
+	Relations []Relation `json:"relations,omitempty"`
+
+	// Payload is the type-specific structured content.
+	Payload Payload `json:"payload"`
+
+	// AuditLog tracks all actions performed on this record.
+	AuditLog []AuditEntry `json:"audit_log"`
+}
+```
+
+### Constructor
+
+```go
+func NewMemoryRecord(id string, memType MemoryType, sensitivity Sensitivity, payload Payload) *MemoryRecord
+```
+
+Creates a new MemoryRecord with required fields initialized, timestamps set, and default lifecycle values.
+
+### Validation
+
+```go
+func (mr *MemoryRecord) Validate() error
+```
+
+Performs basic validation on the MemoryRecord. Returns an error if required fields are missing or invalid.
+
+## Memory Types
+
+```go
+type MemoryType string
+
+const (
+	// MemoryTypeEpisodic captures raw experience such as user inputs, tool calls,
+	// errors, and observations. Episodic memory is intentionally short-lived.
+	MemoryTypeEpisodic MemoryType = "episodic"
+
+	// MemoryTypeWorking captures the current state of an ongoing task.
+	MemoryTypeWorking MemoryType = "working"
+
+	// MemoryTypeSemantic stores stable knowledge such as preferences and facts.
+	MemoryTypeSemantic MemoryType = "semantic"
+
+	// MemoryTypeCompetence encodes procedural knowledge: how to achieve goals
+	// reliably under specific conditions.
+	MemoryTypeCompetence MemoryType = "competence"
+
+	// MemoryTypePlanGraph stores reusable solution structures as directed graphs.
+	MemoryTypePlanGraph MemoryType = "plan_graph"
+)
+```
+
+### IsValidMemoryType
+
+```go
+func IsValidMemoryType(mt MemoryType) bool
+```
+
+Reports whether mt is one of the allowed memory types.
+
+## Sensitivity
+
+```go
+type Sensitivity string
+
+const (
+	// SensitivityPublic indicates content that can be freely shared.
+	SensitivityPublic Sensitivity = "public"
+
+	// SensitivityLow indicates content with minimal sensitivity.
+	SensitivityLow Sensitivity = "low"
+
+	// SensitivityMedium indicates moderately sensitive content.
+	SensitivityMedium Sensitivity = "medium"
+
+	// SensitivityHigh indicates highly sensitive content requiring elevated trust.
+	SensitivityHigh Sensitivity = "high"
+
+	// SensitivityHyper indicates extremely sensitive content with maximum protection.
+	SensitivityHyper Sensitivity = "hyper"
+)
+```
+
+### IsValidSensitivity
+
+```go
+func IsValidSensitivity(s Sensitivity) bool
+```
+
+Reports whether s is one of the allowed sensitivity values.
+
+## Task State
+
+```go
+type TaskState string
+
+const (
+	// TaskStatePlanning indicates the task is in planning phase.
+	TaskStatePlanning TaskState = "planning"
+
+	// TaskStateExecuting indicates the task is actively being executed.
+	TaskStateExecuting TaskState = "executing"
+
+	// TaskStateBlocked indicates the task cannot proceed due to a blocker.
+	TaskStateBlocked TaskState = "blocked"
+
+	// TaskStateWaiting indicates the task is waiting for external input.
+	TaskStateWaiting TaskState = "waiting"
+
+	// TaskStateDone indicates the task has completed.
+	TaskStateDone TaskState = "done"
+)
+```
+
+### IsValidTaskState
+
+```go
+func IsValidTaskState(s TaskState) bool
+```
+
+Reports whether s is one of the allowed task states.
+
+## Outcome Status
+
+```go
+type OutcomeStatus string
+
+const (
+	// OutcomeStatusSuccess indicates the experience completed successfully.
+	OutcomeStatusSuccess OutcomeStatus = "success"
+
+	// OutcomeStatusFailure indicates the experience ended in failure.
+	OutcomeStatusFailure OutcomeStatus = "failure"
+
+	// OutcomeStatusPartial indicates partial success or incomplete outcome.
+	OutcomeStatusPartial OutcomeStatus = "partial"
+)
+```
+
+### IsValidOutcomeStatus
+
+```go
+func IsValidOutcomeStatus(s OutcomeStatus) bool
+```
+
+Reports whether s is one of the allowed outcome statuses.
+
+## Revision Status
+
+```go
+type RevisionStatus string
+
+const (
+	// RevisionStatusActive indicates the record is currently valid.
+	RevisionStatusActive RevisionStatus = "active"
+
+	// RevisionStatusContested indicates uncertainty until resolved.
+	RevisionStatusContested RevisionStatus = "contested"
+
+	// RevisionStatusRetracted indicates the record has been withdrawn.
+	RevisionStatusRetracted RevisionStatus = "retracted"
+)
+```
+
+## Validity Mode
+
+```go
+type ValidityMode string
+
+const (
+	// ValidityModeGlobal indicates the fact is universally valid.
+	ValidityModeGlobal ValidityMode = "global"
+
+	// ValidityModeConditional indicates the fact is valid under specific conditions.
+	ValidityModeConditional ValidityMode = "conditional"
+
+	// ValidityModeTimeboxed indicates the fact is valid within a time window.
+	ValidityModeTimeboxed ValidityMode = "timeboxed"
+)
+```
+
+## Lifecycle
+
+```go
+type Lifecycle struct {
+	// Decay defines the decay profile for this record's salience.
+	Decay DecayProfile `json:"decay"`
+
+	// LastReinforcedAt is the timestamp when salience was last reinforced.
+	LastReinforcedAt time.Time `json:"last_reinforced_at"`
+
+	// Pinned indicates whether the record is protected from decay.
+	Pinned bool `json:"pinned,omitempty"`
+
+	// DeletionPolicy controls how this record may be deleted.
+	DeletionPolicy DeletionPolicy `json:"deletion_policy,omitempty"`
+}
+```
+
+### DecayProfile
+
+```go
+type DecayProfile struct {
+	// Curve specifies the mathematical function for decay.
+	Curve DecayCurve `json:"curve"`
+
+	// HalfLifeSeconds defines the time for salience to decay by half.
+	HalfLifeSeconds int64 `json:"half_life_seconds"`
+
+	// MinSalience is the floor value below which salience cannot decay.
+	// Value range: [0, 1]
+	MinSalience float64 `json:"min_salience,omitempty"`
+
+	// MaxAgeSeconds is the maximum age before the record is eligible for deletion.
+	MaxAgeSeconds int64 `json:"max_age_seconds,omitempty"`
+
+	// ReinforcementGain defines how much salience increases on reinforcement.
+	ReinforcementGain float64 `json:"reinforcement_gain,omitempty"`
+}
+```
+
+### DecayCurve
+
+```go
+type DecayCurve string
+
+const (
+	// DecayCurveExponential uses exponential decay with a half-life parameter.
+	DecayCurveExponential DecayCurve = "exponential"
+
+	// DecayCurveLinear uses linear decay over time.
+	DecayCurveLinear DecayCurve = "linear"
+
+	// DecayCurveCustom allows implementation-defined decay behavior.
+	DecayCurveCustom DecayCurve = "custom"
+)
+```
+
+### DeletionPolicy
+
+```go
+type DeletionPolicy string
+
+const (
+	// DeletionPolicyAutoPrune allows automatic deletion when salience drops below threshold.
+	DeletionPolicyAutoPrune DeletionPolicy = "auto_prune"
+
+	// DeletionPolicyManualOnly requires explicit user action for deletion.
+	DeletionPolicyManualOnly DeletionPolicy = "manual_only"
+
+	// DeletionPolicyNever prevents deletion entirely.
+	DeletionPolicyNever DeletionPolicy = "never"
+)
+```
+
+## Provenance
+
+```go
+type Provenance struct {
+	// Sources is the list of provenance sources that justify this record.
+	Sources []ProvenanceSource `json:"sources"`
+
+	// CreatedBy identifies what created this record.
+	CreatedBy string `json:"created_by,omitempty"`
+}
+
+type ProvenanceSource struct {
+	// Kind specifies the type of source.
+	Kind ProvenanceKind `json:"kind"`
+
+	// Ref is an opaque reference into the host system.
+	Ref string `json:"ref"`
+
+	// Hash is an optional content hash for immutability verification.
+	Hash string `json:"hash,omitempty"`
+
+	// CreatedBy identifies the actor or system that created this source.
+	CreatedBy string `json:"created_by,omitempty"`
+
+	// Timestamp records when this source was created or observed.
+	Timestamp time.Time `json:"timestamp,omitempty"`
+}
+```
+
+### ProvenanceKind
+
+```go
+type ProvenanceKind string
+
+const (
+	ProvenanceKindEvent       ProvenanceKind = "event"
+	ProvenanceKindArtifact    ProvenanceKind = "artifact"
+	ProvenanceKindToolCall    ProvenanceKind = "tool_call"
+	ProvenanceKindObservation ProvenanceKind = "observation"
+	ProvenanceKindOutcome     ProvenanceKind = "outcome"
+)
+```
+
+## Relations
+
+```go
+type Relation struct {
+	// Predicate describes the relationship type.
+	// Examples: supports, contradicts, derived_from, supersedes.
+	Predicate string `json:"predicate"`
+
+	// TargetID is the ID of the related memory record.
+	TargetID string `json:"target_id"`
+
+	// Weight indicates the strength of the relationship.
+	// Value range: [0, 1]
+	Weight float64 `json:"weight,omitempty"`
+
+	// CreatedAt records when this relation was established.
+	CreatedAt time.Time `json:"created_at,omitempty"`
+}
+```
+
+## Audit Entries
+
+```go
+type AuditEntry struct {
+	// Action is the type of action that was performed.
+	Action AuditAction `json:"action"`
+
+	// Actor identifies who or what performed the action.
+	Actor string `json:"actor"`
+
+	// Timestamp records when the action occurred.
+	Timestamp time.Time `json:"timestamp"`
+
+	// Rationale explains why the action was taken.
+	Rationale string `json:"rationale"`
+}
+```
+
+### AuditAction
+
+```go
+type AuditAction string
+
+const (
+	AuditActionCreate    AuditAction = "create"
+	AuditActionRevise    AuditAction = "revise"
+	AuditActionFork      AuditAction = "fork"
+	AuditActionMerge     AuditAction = "merge"
+	AuditActionDelete    AuditAction = "delete"
+	AuditActionReinforce AuditAction = "reinforce"
+	AuditActionDecay     AuditAction = "decay"
+)
+```
+
+## Example
+
+```go
+package main
+
+import (
+    "fmt"
+    "time"
+
+    "github.com/GustyCube/membrane/pkg/schema"
+)
+
+func main() {
+    // Create a semantic payload
+    payload := &schema.SemanticPayload{
+        Kind:      "semantic",
+        Subject:   "user",
+        Predicate: "prefers_language",
+        Object:    "go",
+        Validity: schema.Validity{
+            Mode: schema.ValidityModeGlobal,
+        },
+    }
+
+    // Create a memory record
+    record := schema.NewMemoryRecord(
+        "record-123",
+        schema.MemoryTypeSemantic,
+        schema.SensitivityLow,
+        payload,
+    )
+
+    // Add tags
+    record.Tags = []string{"preferences", "language"}
+
+    // Validate the record
+    if err := record.Validate(); err != nil {
+        fmt.Printf("Validation error: %v\n", err)
+    }
+
+    fmt.Printf("Created record: %s (type=%s, sensitivity=%s)\n",
+        record.ID, record.Type, record.Sensitivity)
+}
+```

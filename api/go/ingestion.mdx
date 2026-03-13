@@ -1,0 +1,355 @@
+---
+title: Ingestion
+description: Request types for ingesting memory records
+---
+
+## Overview
+
+The `ingestion` package provides request types for creating memory records. The ingestion service coordinates classification, policy application, and storage.
+
+## IngestEventRequest
+
+Creates an episodic memory record from an event.
+
+```go
+type IngestEventRequest struct {
+	// Source identifies the actor or system that produced the event.
+	Source string
+
+	// EventKind is the type of event (e.g., "user_input", "error", "system").
+	EventKind string
+
+	// Ref is a reference identifier for the source event.
+	Ref string
+
+	// Summary is an optional human-readable summary.
+	Summary string
+
+	// Timestamp is when the event occurred. If zero, the current time is used.
+	Timestamp time.Time
+
+	// Tags are optional labels for categorization.
+	Tags []string
+
+	// Scope is the visibility scope.
+	Scope string
+
+	// Sensitivity overrides the default sensitivity if set.
+	Sensitivity schema.Sensitivity
+}
+```
+
+### Example
+
+```go
+rec, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+    Source:    "build-agent",
+    EventKind: "tool_call",
+    Ref:       "build#42",
+    Summary:   "Executed go build, failed with linker error",
+    Tags:      []string{"build", "error"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Ingested event: %s\n", rec.ID)
+```
+
+## IngestToolOutputRequest
+
+Creates an episodic memory record from a tool invocation.
+
+```go
+type IngestToolOutputRequest struct {
+	// Source identifies the actor or system that invoked the tool.
+	Source string
+
+	// ToolName is the name of the tool that was invoked.
+	ToolName string
+
+	// Args are the arguments passed to the tool.
+	Args map[string]any
+
+	// Result is the output produced by the tool.
+	Result any
+
+	// DependsOn lists IDs of tool nodes this output depends on.
+	DependsOn []string
+
+	// Timestamp is when the tool was invoked. If zero, the current time is used.
+	Timestamp time.Time
+
+	// Tags are optional labels for categorization.
+	Tags []string
+
+	// Scope is the visibility scope.
+	Scope string
+
+	// Sensitivity overrides the default sensitivity if set.
+	Sensitivity schema.Sensitivity
+}
+```
+
+### Example
+
+```go
+rec, err := m.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
+    Source:   "agent",
+    ToolName: "run_command",
+    Args: map[string]any{
+        "command": "go test ./...",
+    },
+    Result: map[string]any{
+        "exit_code": 0,
+        "output":    "PASS",
+    },
+    Tags: []string{"testing"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## IngestObservationRequest
+
+Creates a semantic memory record from an observation.
+
+```go
+type IngestObservationRequest struct {
+	// Source identifies the actor or system that made the observation.
+	Source string
+
+	// Subject is the entity the observation is about.
+	Subject string
+
+	// Predicate is the relationship or property observed.
+	Predicate string
+
+	// Object is the value or related entity observed.
+	Object any
+
+	// Timestamp is when the observation was made. If zero, the current time is used.
+	Timestamp time.Time
+
+	// Tags are optional labels for categorization.
+	Tags []string
+
+	// Scope is the visibility scope.
+	Scope string
+
+	// Sensitivity overrides the default sensitivity if set.
+	Sensitivity schema.Sensitivity
+}
+```
+
+### Example
+
+```go
+rec, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+    Source:    "agent",
+    Subject:   "user",
+    Predicate: "prefers_language",
+    Object:    "go",
+    Tags:      []string{"preferences"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## IngestOutcomeRequest
+
+Updates an existing episodic record with outcome data.
+
+```go
+type IngestOutcomeRequest struct {
+	// Source identifies the actor or system reporting the outcome.
+	Source string
+
+	// TargetRecordID is the ID of the existing record to update.
+	TargetRecordID string
+
+	// OutcomeStatus is the result (success, failure, partial).
+	OutcomeStatus schema.OutcomeStatus
+
+	// Timestamp is when the outcome was determined. If zero, the current time is used.
+	Timestamp time.Time
+}
+```
+
+### Example
+
+```go
+rec, err := m.IngestOutcome(ctx, ingestion.IngestOutcomeRequest{
+    Source:         "agent",
+    TargetRecordID: episodicRecordID,
+    OutcomeStatus:  schema.OutcomeStatusSuccess,
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## IngestWorkingStateRequest
+
+Creates a working memory record from a working state snapshot.
+
+```go
+type IngestWorkingStateRequest struct {
+	// Source identifies the actor or system that produced the working state.
+	Source string
+
+	// ThreadID is the identifier for the current thread/session.
+	ThreadID string
+
+	// State indicates the current task state.
+	State schema.TaskState
+
+	// NextActions lists the next planned actions.
+	NextActions []string
+
+	// OpenQuestions lists unresolved questions for the task.
+	OpenQuestions []string
+
+	// ContextSummary provides a summary of the current context.
+	ContextSummary string
+
+	// ActiveConstraints lists constraints currently active for the task.
+	ActiveConstraints []schema.Constraint
+
+	// Timestamp is when the working state was captured. If zero, the current time is used.
+	Timestamp time.Time
+
+	// Tags are optional labels for categorization.
+	Tags []string
+
+	// Scope is the visibility scope.
+	Scope string
+
+	// Sensitivity overrides the default sensitivity if set.
+	Sensitivity schema.Sensitivity
+}
+```
+
+### Example
+
+```go
+rec, err := m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
+    Source:   "agent",
+    ThreadID: "session-001",
+    State:    schema.TaskStateExecuting,
+    NextActions: []string{
+        "run tests",
+        "deploy to staging",
+    },
+    OpenQuestions: []string{
+        "Should we update the schema?",
+    },
+    ContextSummary: "Backend initialized, frontend pending, docs TODO",
+})
+if err != nil {
+    log.Fatal(err)
+}
+```
+
+## Constraint
+
+```go
+type Constraint struct {
+	// Type identifies the kind of constraint.
+	Type string `json:"type"`
+
+	// Key is the constraint key or name.
+	Key string `json:"key"`
+
+	// Value is the constraint value.
+	Value any `json:"value"`
+
+	// Required indicates if the constraint is mandatory.
+	Required bool `json:"required,omitempty"`
+}
+```
+
+## Complete Ingestion Example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "time"
+
+    "github.com/GustyCube/membrane/pkg/ingestion"
+    "github.com/GustyCube/membrane/pkg/membrane"
+    "github.com/GustyCube/membrane/pkg/schema"
+)
+
+func main() {
+    cfg := membrane.DefaultConfig()
+    cfg.DBPath = "example.db"
+
+    m, err := membrane.New(cfg)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer m.Stop()
+
+    ctx := context.Background()
+    m.Start(ctx)
+
+    // Ingest a tool invocation
+    toolRec, _ := m.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
+        Source:   "build-agent",
+        ToolName: "go_build",
+        Args: map[string]any{
+            "package": "./cmd/app",
+        },
+        Result: map[string]any{
+            "success": false,
+            "error":   "linker error",
+        },
+        Tags: []string{"build", "error"},
+    })
+
+    // Update with outcome
+    m.IngestOutcome(ctx, ingestion.IngestOutcomeRequest{
+        Source:         "build-agent",
+        TargetRecordID: toolRec.ID,
+        OutcomeStatus:  schema.OutcomeStatusFailure,
+    })
+
+    // Record an observation
+    m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+        Source:    "build-agent",
+        Subject:   "project",
+        Predicate: "uses_cgo",
+        Object:    true,
+    })
+
+    // Track working state
+    m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
+        Source:   "build-agent",
+        ThreadID: "build-session-1",
+        State:    schema.TaskStateBlocked,
+        NextActions: []string{
+            "investigate linker flags",
+            "check CGO_ENABLED",
+        },
+        OpenQuestions: []string{
+            "Are system libraries installed?",
+        },
+        ActiveConstraints: []schema.Constraint{
+            {
+                Type:     "environment",
+                Key:      "CGO_ENABLED",
+                Value:    "1",
+                Required: true,
+            },
+        },
+    })
+
+    fmt.Println("Ingestion complete")
+}
+```

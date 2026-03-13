@@ -1,0 +1,323 @@
+---
+title: 'Competence Learning'
+description: 'How Membrane learns procedures from successful episodic patterns and tracks their performance'
+---
+
+## Overview
+
+Competence memory encodes **procedural knowledge**: how to achieve goals reliably under specific conditions. Instead of just remembering that an event occurred, Membrane learns *how* to solve problems by extracting reusable procedures from repeated successful outcomes.
+
+<Info>
+**RFC Foundation**: Competence memory is defined in RFC sections 8, 15A.5, and 15A.9. It represents "knowing how" rather than "knowing that."
+</Info>
+
+## How Competence Records Are Created
+
+Competence consolidation runs as a background job that analyzes episodic records to identify repeated successful patterns.
+
+### Extraction Process
+
+1. **Pattern Recognition**: The consolidator groups episodic records by their tool usage signature
+2. **Frequency Threshold**: A pattern must appear at least **2 times** (`minPatternOccurrences`) before extraction
+3. **Success Filter**: Only episodic records with `outcome: "success"` are considered
+4. **Tool Graph Requirement**: Episodes must contain a tool graph showing the sequence of actions taken
+
+<CodeGroup>
+```go Source: pkg/consolidation/competence.go:16-19
+const minPatternOccurrences = 2
+```
+</CodeGroup>
+
+### Tool Signature Matching
+
+Membrane generates a deterministic signature from the list of tools used in an episode. Tools are sorted alphabetically to match patterns regardless of invocation order:
+
+<CodeGroup>
+```go Tool Signature Algorithm
+// From pkg/consolidation/competence.go:218-226
+func toolSignature(tools []string) string {
+    sorted := make([]string, len(tools))
+    copy(sorted, tools)
+    sort.Strings(sorted)
+    return strings.Join(sorted, "+")
+}
+```
+</CodeGroup>
+
+For example, if an agent repeatedly uses `shell` + `build` + `test` to solve build failures, this pattern is recognized and promoted to a competence record.
+
+## Competence Record Structure
+
+Each competence record follows the schema defined in RFC 15A.9:
+
+<ParamField path="skill_name" type="string" required>
+  Unique identifier for the skill, typically derived from the tool signature (e.g., `"skill:build+shell+test"`)
+</ParamField>
+
+<ParamField path="triggers" type="array" required>
+  Conditions that activate this competence. Each trigger includes:
+  - `signal`: Error signature, intent label, or pattern that indicates this skill applies
+  - `conditions`: Optional context constraints (OS, tool versions, etc.)
+</ParamField>
+
+<ParamField path="recipe" type="array" required>
+  Ordered sequence of steps to execute:
+  - `step`: Human-readable description
+  - `tool`: Tool to invoke
+  - `args_schema`: Expected arguments
+  - `validation`: Success criteria
+</ParamField>
+
+<ParamField path="required_tools" type="array">
+  List of tools needed to execute this competence
+</ParamField>
+
+<ParamField path="failure_modes" type="array">
+  Known failure cases and error patterns
+</ParamField>
+
+<ParamField path="fallbacks" type="array">
+  Alternative strategies when the primary recipe fails
+</ParamField>
+
+<ParamField path="performance" type="object">
+  Performance statistics:
+  - `success_count`: Number of successful executions
+  - `failure_count`: Number of failed executions
+  - `success_rate`: Computed ratio (0.0-1.0)
+  - `avg_latency_ms`: Average execution time
+  - `last_used_at`: Timestamp of last use
+</ParamField>
+
+<ParamField path="version" type="string">
+  Version identifier for tracking competence evolution
+</ParamField>
+
+## Example Competence Record
+
+<Accordion title="Linker Cache Error Fix">
+```json
+{
+  "id": "c01d...",
+  "type": "competence",
+  "sensitivity": "medium",
+  "confidence": 0.7,
+  "salience": 0.6,
+  "payload": {
+    "kind": "competence",
+    "skill_name": "fix_linker_cache_error",
+    "triggers": [
+      {
+        "signal": "ld: cache mismatch",
+        "conditions": {"os": "macos"}
+      }
+    ],
+    "recipe": [
+      {
+        "step": "Clear build cache",
+        "tool": "shell",
+        "validation": "cache directory removed"
+      },
+      {
+        "step": "Rebuild with clean flags",
+        "tool": "build",
+        "validation": "build succeeds"
+      }
+    ],
+    "failure_modes": [
+      "If cache directory is locked, retry with elevated permissions"
+    ],
+    "fallbacks": ["Reinstall toolchain"],
+    "version": "1.0"
+  }
+}
+```
+</Accordion>
+
+## Reinforcement and Decay
+
+### Reinforcement
+
+When a consolidation run finds **additional** episodic records matching an existing competence pattern:
+
+1. The competence record's salience is boosted by **+0.1** (capped at 1.0)
+2. An audit entry is added documenting the reinforcement
+3. The record's performance statistics are updated
+
+<CodeGroup>
+```go Reinforcement Logic: pkg/consolidation/competence.go:104-119
+if existingRec, found := existingSkills[skillName]; found {
+    err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
+        newSalience := existingRec.Salience + 0.1
+        if newSalience > 1.0 {
+            newSalience = 1.0
+        }
+        if err := tx.UpdateSalience(ctx, existingRec.ID, newSalience); err != nil {
+            return err
+        }
+        entry := schema.AuditEntry{
+            Action:    schema.AuditActionReinforce,
+            Actor:     "consolidation/competence",
+            Timestamp: now,
+            Rationale: fmt.Sprintf("Reinforced: %d episodes match pattern", len(g.records)),
+        }
+        return tx.AddAuditEntry(ctx, existingRec.ID, entry)
+    })
+}
+```
+</CodeGroup>
+
+### Decay
+
+Competence records decay over time like all memory types. Salience decreases according to the configured decay curve unless the skill is successfully used and reinforced by retrieval feedback.
+
+## Success Tracking
+
+The competence consolidator initializes performance metrics when creating new records:
+
+- `success_count`: Set to the number of episodic records that contributed to extraction
+- `success_rate`: Initially 1.0 (100%) since only successful episodes are used
+- `last_used_at`: Set to consolidation time
+
+These metrics are updated during execution when:
+- The agent retrieves and uses the competence → success count increases
+- The procedure fails → failure count increases
+- Success rate is recomputed: `success_count / (success_count + failure_count)`
+
+<CodeGroup>
+```go Initial Performance Stats: pkg/consolidation/competence.go:142-147
+Performance: &schema.PerformanceStats{
+    SuccessCount: int64(len(g.records)),
+    SuccessRate:  1.0,
+    LastUsedAt:   &now,
+}
+```
+</CodeGroup>
+
+## Failure Modes and Fallbacks
+
+While the current implementation creates a basic competence structure, the schema supports rich failure handling:
+
+<Steps>
+  <Step title="Failure Mode Documentation">
+    Known error patterns and edge cases that can cause the procedure to fail
+  </Step>
+  <Step title="Validation Criteria">
+    How to verify each step succeeded before proceeding
+  </Step>
+  <Step title="Fallback Strategies">
+    Alternative procedures when the primary recipe fails
+  </Step>
+</Steps>
+
+This allows agents to handle errors gracefully and switch to alternative approaches based on observed failure patterns.
+
+## Sensitivity and Scope Derivation
+
+When consolidating multiple episodic records into a competence record, Membrane applies conservative security policies:
+
+### Sensitivity Policy
+
+The **maximum** sensitivity level across all source episodes is used:
+
+<CodeGroup>
+```go Sensitivity Derivation: pkg/consolidation/competence.go:243-254
+func deriveMaxSensitivity(records []*schema.MemoryRecord) schema.Sensitivity {
+    maxSensitivity := schema.SensitivityLow
+    maxLevel := sensitivityRank(maxSensitivity)
+    for _, rec := range records {
+        level := sensitivityRank(rec.Sensitivity)
+        if level > maxLevel {
+            maxLevel = level
+            maxSensitivity = rec.Sensitivity
+        }
+    }
+    return maxSensitivity
+}
+```
+</CodeGroup>
+
+Sensitivity ranking: `public(0) < low(1) < medium(2) < high(3) < hyper(4)`
+
+### Scope Policy
+
+If all source episodes share the same scope, that scope is preserved. If episodes come from different scopes (e.g., different projects or users), the competence is marked with a mixed-scope fallback: `"consolidated:mixed-scope"`.
+
+This ensures that procedures learned from sensitive contexts are not inadvertently exposed to lower-trust environments.
+
+## Provenance and Audit Trail
+
+Every competence record maintains full provenance:
+
+- **Provenance Sources**: Links to all episodic records that contributed to the pattern
+- **Relation Edges**: `derived_from` relationships pointing to source episodes
+- **Audit Log**: Complete history including:
+  - Initial creation with rationale
+  - Each reinforcement event
+  - Future revisions or supersessions
+
+<Accordion title="Audit Entry Example">
+```json
+{
+  "action": "create",
+  "actor": "consolidation/competence",
+  "timestamp": "2026-02-05T12:00:00Z",
+  "rationale": "Extracted from 3 episodic records with pattern build+shell; policy: sensitivity=max(medium), scope=preserved(project-x)"
+}
+```
+</Accordion>
+
+## Competence Selection
+
+When an agent retrieves memory for a task, multiple competence records may match. Selection considers:
+
+1. **Trigger Match**: Does the signal match the current problem?
+2. **Condition Satisfaction**: Are contextual conditions met (OS, tool versions)?
+3. **Success Rate**: Higher success rates are preferred
+4. **Recency**: More recently reinforced skills are favored
+5. **Salience**: Higher salience indicates more reliable/useful procedures
+
+<Info>
+RFC 15A.11 requires implementations to return multiple candidates ranked by these criteria when selection confidence is low.
+</Info>
+
+## Consolidation Schedule
+
+Competence consolidation runs as a background job:
+
+- Default interval: **6 hours** (configurable via `consolidation_interval`)
+- Triggered automatically by the consolidation scheduler
+- Can be manually invoked via: `make eval-competence` or Go test suite
+
+<CodeGroup>
+```bash Manual Evaluation
+# Test competence extraction and selection
+make eval-competence
+
+# Or run the full test suite
+go test ./tests -run TestEvalCompetenceSelection
+```
+</CodeGroup>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Structure Tool Graphs" icon="diagram-project">
+    Ensure episodic records include detailed tool graphs with dependencies to enable accurate pattern extraction
+  </Card>
+  <Card title="Mark Outcomes Clearly" icon="check-circle">
+    Set explicit outcome status (`success`/`failure`/`partial`) on episodic records for effective learning
+  </Card>
+  <Card title="Reinforce Actively" icon="arrows-rotate">
+    Use the `Reinforce` API when retrieved competence records lead to successful execution
+  </Card>
+  <Card title="Version Procedures" icon="code-branch">
+    When updating procedures, create new versions rather than replacing existing ones to preserve alternatives
+  </Card>
+</CardGroup>
+
+## Related Sections
+
+- [Plan Graphs](/advanced/plan-graphs) - Higher-level solution structures built from competence patterns
+- [Observability](/advanced/observability) - Track competence success rates via metrics
+- [Evaluation](/advanced/evaluation) - Test competence extraction with `eval-competence`

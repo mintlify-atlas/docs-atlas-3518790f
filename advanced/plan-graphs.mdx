@@ -1,0 +1,392 @@
+---
+title: 'Plan Graphs'
+description: 'How Membrane captures and reuses complex solution structures as directed graphs'
+---
+
+## Overview
+
+Plan graphs store **reusable solution structures** as directed acyclic graphs (DAGs) of actions. They capture *how* a complex solution was achieved, including action sequences, dependencies, and conditional branches. Unlike competence records (which focus on repeated tool patterns), plan graphs preserve the full structure of multi-step orchestrations.
+
+<Info>
+**RFC Foundation**: Plan memory is defined in RFC sections 9, 15A.6, and 15A.10. Plans are versioned, reusable, and selectable by constraint matching.
+</Info>
+
+## When Plan Graphs Are Created
+
+Plan graph consolidation extracts reusable plans from episodic memory when episodes contain **complex tool graphs**.
+
+### Extraction Criteria
+
+<Steps>
+  <Step title="Minimum Complexity">
+    Tool graph must contain at least **3 nodes** (`minToolGraphNodes`). Trivial single-tool invocations are not extracted.
+  </Step>
+  <Step title="Success Outcome">
+    The episode should represent a successful execution path worth reusing.
+  </Step>
+  <Step title="No Duplication">
+    If a plan graph has already been extracted from an episode, it is not re-extracted.
+  </Step>
+</Steps>
+
+<CodeGroup>
+```go Minimum Complexity Threshold: pkg/consolidation/plangraph.go:14-17
+const minToolGraphNodes = 3
+```
+</CodeGroup>
+
+### Consolidation Process
+
+1. **List Episodic Records**: Scan all episodic records for those with tool graphs
+2. **Check Existing Plans**: Avoid duplicating plans from episodes already processed
+3. **Convert Structure**: Transform episodic `ToolNode` graphs into plan `PlanNode` + `PlanEdge` structures
+4. **Create Record**: Store as a new `plan_graph` memory record with full provenance
+
+<CodeGroup>
+```go Conversion Logic: pkg/consolidation/plangraph.go:154-175
+func convertToolGraphToPlan(toolNodes []schema.ToolNode) ([]schema.PlanNode, []schema.PlanEdge) {
+    nodes := make([]schema.PlanNode, 0, len(toolNodes))
+    edges := make([]schema.PlanEdge, 0)
+
+    for _, tn := range toolNodes {
+        nodes = append(nodes, schema.PlanNode{
+            ID:     tn.ID,
+            Op:     tn.Tool,
+            Params: tn.Args,
+        })
+
+        for _, dep := range tn.DependsOn {
+            edges = append(edges, schema.PlanEdge{
+                From: dep,
+                To:   tn.ID,
+                Kind: schema.EdgeKindControl,
+            })
+        }
+    }
+
+    return nodes, edges
+}
+```
+</CodeGroup>
+
+## Plan Graph Structure
+
+Each plan graph record follows the schema defined in RFC 15A.10:
+
+<ParamField path="plan_id" type="string" required>
+  Unique identifier for the plan (UUID)
+</ParamField>
+
+<ParamField path="version" type="string" required>
+  Version identifier allowing multiple versions of the same plan to coexist (initially "1")
+</ParamField>
+
+<ParamField path="intent" type="string">
+  High-level intent label (e.g., `"setup_project"`, `"deploy_service"`). Inferred from the first episodic timeline event.
+</ParamField>
+
+<ParamField path="nodes" type="array" required>
+  Array of action nodes in the plan. Each node contains:
+  - `id`: Unique node identifier within the plan
+  - `op`: Action or tool identifier
+  - `params`: Parameters for the operation
+  - `guards`: Conditional execution criteria
+</ParamField>
+
+<ParamField path="edges" type="array" required>
+  Array of dependency edges. Each edge contains:
+  - `from`: Source node ID
+  - `to`: Target node ID
+  - `kind`: Edge type (`"data"` or `"control"`)
+</ParamField>
+
+<ParamField path="constraints" type="object">
+  Trust requirements, sensitivity limits, environment constraints that affect plan applicability
+</ParamField>
+
+<ParamField path="inputs_schema" type="object">
+  Expected inputs for the plan (JSON Schema format)
+</ParamField>
+
+<ParamField path="outputs_schema" type="object">
+  Expected outputs from plan execution (JSON Schema format)
+</ParamField>
+
+<ParamField path="metrics" type="object">
+  Execution statistics:
+  - `execution_count`: Number of times this plan has been executed
+  - `avg_latency_ms`: Average execution time
+  - `failure_rate`: Rate of failed executions (0.0-1.0)
+  - `last_executed_at`: Timestamp of last execution
+</ParamField>
+
+## DAG Representation
+
+Plan graphs are directed acyclic graphs where:
+
+- **Nodes** represent actions or tool invocations
+- **Edges** represent dependencies between actions
+- **Edge Types**:
+  - `control`: Execution order dependency (action A must complete before action B starts)
+  - `data`: Data flow dependency (output from A is input to B)
+
+<Accordion title="Project Setup Plan Graph Example">
+```json
+{
+  "plan_id": "abc123...",
+  "version": "1",
+  "intent": "setup_project",
+  "nodes": [
+    {
+      "id": "node1",
+      "op": "git_init",
+      "params": {"repo_name": "my-project"}
+    },
+    {
+      "id": "node2",
+      "op": "setup_backend",
+      "params": {"language": "go"},
+      "guards": {"has_backend": true}
+    },
+    {
+      "id": "node3",
+      "op": "setup_frontend",
+      "params": {"framework": "react"},
+      "guards": {"has_frontend": true}
+    },
+    {
+      "id": "node4",
+      "op": "configure_ci",
+      "params": {"provider": "github-actions"}
+    }
+  ],
+  "edges": [
+    {"from": "node1", "to": "node2", "kind": "control"},
+    {"from": "node1", "to": "node3", "kind": "control"},
+    {"from": "node2", "to": "node4", "kind": "control"},
+    {"from": "node3", "to": "node4", "kind": "control"}
+  ],
+  "metrics": {
+    "execution_count": 1,
+    "last_executed_at": "2026-02-05T12:00:00Z"
+  }
+}
+```
+
+This represents a plan where:
+1. Repository initialization happens first (`node1`)
+2. Backend and frontend setup happen in parallel (`node2`, `node3`) after init
+3. CI configuration happens last (`node4`) after both setup tasks complete
+</Accordion>
+
+## Intent Inference
+
+The consolidator attempts to infer a meaningful intent label from episodic data:
+
+<CodeGroup>
+```go Intent Inference: pkg/consolidation/plangraph.go:177-185
+func inferIntent(ep *schema.EpisodicPayload) string {
+    if len(ep.Timeline) > 0 {
+        return ep.Timeline[0].EventKind
+    }
+    return "unknown"
+}
+```
+</CodeGroup>
+
+The intent is derived from the first event in the episodic timeline. For example, if the episode begins with a `"project_setup"` event, that becomes the plan's intent label.
+
+## Plan Reuse and Execution Tracking
+
+Plan graphs are designed to be reused across multiple executions:
+
+### Execution Metrics
+
+Each time a plan is retrieved and executed:
+
+1. **Execution Count** increments
+2. **Latency** is measured and averaged into `avg_latency_ms`
+3. **Outcome** updates `failure_rate` based on success/failure
+4. **Last Executed** timestamp is updated
+
+<CodeGroup>
+```go Initial Metrics: pkg/consolidation/plangraph.go:93-96
+Metrics: &schema.PlanMetrics{
+    ExecutionCount: 1,
+    LastExecutedAt: &now,
+}
+```
+</CodeGroup>
+
+### Reuse Frequency Metric
+
+The observability system tracks **plan reuse frequency**: the average execution count across all plan graph records.
+
+<CodeGroup>
+```go Reuse Frequency Calculation: pkg/metrics/metrics.go:129-133
+if pg, ok := rec.Payload.(*schema.PlanGraphPayload); ok && pg.Metrics != nil {
+    planExecSum += float64(pg.Metrics.ExecutionCount)
+    planCount++
+}
+// ...
+snap.PlanReuseFrequency = planExecSum / float64(planCount)
+```
+</CodeGroup>
+
+Higher reuse frequency indicates that agents are successfully applying learned solution patterns rather than solving problems from scratch each time.
+
+## Plan Selection
+
+When multiple plan graphs match a given intent, selection considers:
+
+1. **Intent Match**: Does the plan's intent label match the current task?
+2. **Constraint Satisfaction**: Are environmental constraints met?
+3. **Execution Success**: Plans with lower failure rates are preferred
+4. **Recency**: More recently executed plans are favored
+5. **Salience**: Higher-salience plans are considered more reliable
+
+<Info>
+**RFC 15A.11**: When selection confidence is below threshold, implementations MUST return multiple candidates ranked by these criteria.
+</Info>
+
+## Versioning and Evolution
+
+Plan graphs support versioning to allow evolution over time:
+
+- **Initial Version**: Set to `"1"` when first extracted
+- **Supersession**: When a better plan is discovered, it can supersede the old version
+- **Forking**: Conditional variants can be created for different environments
+- **Audit Trail**: All revisions are tracked with full provenance
+
+This allows agents to maintain multiple solution strategies and select the most appropriate one based on context.
+
+## Provenance and Relations
+
+Every plan graph record maintains:
+
+- **Provenance Source**: Link to the episodic record it was extracted from
+- **Derived From Relation**: Explicit graph edge connecting plan to source episode
+- **Audit Log**: Creation event with rationale
+
+<Accordion title="Plan Graph Audit Entry">
+```json
+{
+  "action": "create",
+  "actor": "consolidation/plangraph",
+  "timestamp": "2026-02-05T12:00:00Z",
+  "rationale": "Extracted plan graph from episodic record ep-456 (5 nodes)"
+}
+```
+</Accordion>
+
+## Sensitivity and Scope Inheritance
+
+Plan graphs inherit security properties from their source episodic record:
+
+- **Sensitivity**: Matches the sensitivity of the source episode
+- **Scope**: Preserves the scope (user, project, workspace) of the source
+- **Tags**: Includes `"consolidated"` and `"auto-plangraph"` tags
+
+This ensures that plans extracted from sensitive contexts are not inadvertently exposed.
+
+## Consolidation Schedule
+
+Plan graph consolidation runs as part of the background consolidation service:
+
+- Default interval: **6 hours** (configurable via `consolidation_interval`)
+- Runs after competence consolidation in the pipeline
+- Can be manually triggered for testing
+
+<CodeGroup>
+```bash Manual Evaluation
+# Test plan graph extraction and selection
+make eval-plan
+
+# Or run the full test suite
+go test ./tests -run TestEvalPlanGraphSelection
+```
+</CodeGroup>
+
+## Implementation Notes
+
+### Deduplication
+
+The consolidator maintains a set of episodic record IDs that have already been processed:
+
+<CodeGroup>
+```go Deduplication Logic: pkg/consolidation/plangraph.go:43-61
+planGraphs, err := c.store.ListByType(ctx, schema.MemoryTypePlanGraph)
+// ...
+derivedFrom := make(map[string]bool)
+for _, pg := range planGraphs {
+    rels, err := c.store.GetRelations(ctx, pg.ID)
+    if err != nil {
+        continue
+    }
+    for _, rel := range rels {
+        if rel.Predicate == "derived_from" {
+            derivedFrom[rel.TargetID] = true
+        }
+    }
+}
+```
+</CodeGroup>
+
+This ensures that even if consolidation runs multiple times, each episodic record generates at most one plan graph.
+
+### Transaction Safety
+
+Plan creation and relation creation occur within a single transaction:
+
+<CodeGroup>
+```go Atomic Creation: pkg/consolidation/plangraph.go:128-139
+err := storage.WithTransaction(ctx, c.store, func(tx storage.Transaction) error {
+    if err := tx.Create(ctx, newRec); err != nil {
+        return err
+    }
+    rel := schema.Relation{
+        Predicate: "derived_from",
+        TargetID:  rec.ID,
+        Weight:    1.0,
+        CreatedAt: now,
+    }
+    return tx.AddRelation(ctx, newRec.ID, rel)
+})
+```
+</CodeGroup>
+
+This guarantees that partial writes cannot occur if an error happens mid-operation.
+
+## Comparison: Plan Graphs vs. Competence
+
+| Feature | Plan Graphs | Competence Records |
+|---------|-------------|--------------------|
+| **Purpose** | Capture full solution structure | Extract repeated tool patterns |
+| **Complexity** | ≥3 tool nodes | ≥2 occurrences of pattern |
+| **Representation** | DAG with nodes and edges | Linear recipe with steps |
+| **Use Case** | Complex multi-step orchestrations | Single-problem troubleshooting |
+| **Reinforcement** | Via execution metrics | Via pattern recurrence |
+| **Selection Basis** | Intent + constraints + success rate | Trigger + conditions + success rate |
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Structure Dependencies" icon="diagram-project">
+    Ensure episodic tool graphs include `depends_on` relationships to capture true execution order
+  </Card>
+  <Card title="Tag Intents Clearly" icon="tag">
+    Set meaningful event kinds in episodic timelines to improve intent inference
+  </Card>
+  <Card title="Track Execution Outcomes" icon="chart-line">
+    Update plan metrics after each execution to improve selection accuracy
+  </Card>
+  <Card title="Version Plans" icon="code-branch">
+    When workflows change, create new plan versions rather than replacing existing ones
+  </Card>
+</CardGroup>
+
+## Related Sections
+
+- [Competence Learning](/advanced/competence-learning) - Lower-level procedural patterns
+- [Observability](/advanced/observability) - Monitor plan reuse frequency via metrics
+- [Evaluation](/advanced/evaluation) - Test plan extraction with `eval-plan`

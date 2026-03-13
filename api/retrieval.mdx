@@ -1,0 +1,353 @@
+---
+title: 'Retrieval Methods'
+description: 'Query and fetch memory records from Membrane'
+---
+
+## Overview
+
+Retrieval methods allow you to query and fetch memory records from the Membrane system. Membrane provides two retrieval methods: semantic search with `Retrieve` and direct lookup with `RetrieveByID`.
+
+Both methods incorporate trust context to ensure proper access control based on sensitivity levels and scopes.
+
+## TrustContext
+
+The `TrustContext` message is used to define access permissions and authentication for retrieval operations.
+
+### Fields
+
+<ParamField path="max_sensitivity" type="string" required>
+  Maximum sensitivity level the requester can access (e.g., "public", "internal", "confidential")
+</ParamField>
+
+<ParamField path="authenticated" type="bool" required>
+  Whether the requester is authenticated
+</ParamField>
+
+<ParamField path="actor_id" type="string" required>
+  Unique identifier of the requesting actor or agent
+</ParamField>
+
+<ParamField path="scopes" type="string[]" required>
+  Array of scopes the actor has access to
+</ParamField>
+
+### Example
+
+```json
+{
+  "max_sensitivity": "internal",
+  "authenticated": true,
+  "actor_id": "agent-1",
+  "scopes": ["team", "project-alpha"]
+}
+```
+
+## Retrieve
+
+Perform semantic search to retrieve relevant memory records based on a task description.
+
+### Request Parameters
+
+<ParamField path="task_descriptor" type="string" required>
+  Natural language description of the task or query
+</ParamField>
+
+<ParamField path="trust" type="TrustContext" required>
+  Trust context defining access permissions
+</ParamField>
+
+<ParamField path="memory_types" type="string[]">
+  Filter results by memory types (e.g., ["event", "observation"]). Empty array returns all types.
+</ParamField>
+
+<ParamField path="min_salience" type="double">
+  Minimum salience threshold for returned records (0.0 to 1.0)
+</ParamField>
+
+<ParamField path="limit" type="int32">
+  Maximum number of records to return
+</ParamField>
+
+### Response
+
+<ResponseField name="records" type="bytes[]" required>
+  Array of JSON-encoded MemoryRecord objects
+</ResponseField>
+
+<ResponseField name="selection" type="bytes">
+  Optional JSON-encoded SelectionResult containing metadata about the selection process
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    req := &membranev1.RetrieveRequest{
+        TaskDescriptor: "Find user preferences related to dietary restrictions",
+        Trust: &membranev1.TrustContext{
+            MaxSensitivity: "internal",
+            Authenticated:  true,
+            ActorId:        "agent-1",
+            Scopes:         []string{"team", "user_profile"},
+        },
+        MemoryTypes:  []string{"observation", "event"},
+        MinSalience:  0.5,
+        Limit:        10,
+    }
+    
+    resp, err := client.Retrieve(ctx, req)
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    // Parse the returned records
+    for _, recordBytes := range resp.Records {
+        var record MemoryRecord
+        json.Unmarshal(recordBytes, &record)
+        fmt.Printf("Record ID: %s\n", record.ID)
+    }
+    
+    // Optional: Parse selection metadata
+    if len(resp.Selection) > 0 {
+        var selection SelectionResult
+        json.Unmarshal(resp.Selection, &selection)
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    import json
+    from membrane.v1 import membrane_pb2
+    
+    req = membrane_pb2.RetrieveRequest(
+        task_descriptor="Find user preferences related to dietary restrictions",
+        trust=membrane_pb2.TrustContext(
+            max_sensitivity="internal",
+            authenticated=True,
+            actor_id="agent-1",
+            scopes=["team", "user_profile"]
+        ),
+        memory_types=["observation", "event"],
+        min_salience=0.5,
+        limit=10
+    )
+    
+    resp = stub.Retrieve(req)
+    
+    # Parse the returned records
+    for record_bytes in resp.records:
+        record = json.loads(record_bytes)
+        print(f"Record ID: {record['id']}")
+    
+    # Optional: Parse selection metadata
+    if resp.selection:
+        selection = json.loads(resp.selection)
+    ```
+  </Tab>
+  
+  <Tab title="TypeScript">
+    ```typescript
+    const req: RetrieveRequest = {
+      taskDescriptor: 'Find user preferences related to dietary restrictions',
+      trust: {
+        maxSensitivity: 'internal',
+        authenticated: true,
+        actorId: 'agent-1',
+        scopes: ['team', 'user_profile'],
+      },
+      memoryTypes: ['observation', 'event'],
+      minSalience: 0.5,
+      limit: 10,
+    };
+    
+    client.retrieve(req, (err, resp) => {
+      if (err) throw err;
+      
+      // Parse the returned records
+      resp.records.forEach(recordBytes => {
+        const record = JSON.parse(recordBytes.toString());
+        console.log(`Record ID: ${record.id}`);
+      });
+      
+      // Optional: Parse selection metadata
+      if (resp.selection) {
+        const selection = JSON.parse(resp.selection.toString());
+      }
+    });
+    ```
+  </Tab>
+</Tabs>
+
+### Use Cases
+
+- **Context Retrieval**: Fetch relevant memories for an agent working on a specific task
+- **User Personalization**: Retrieve user preferences and past interactions
+- **Decision Support**: Find historical outcomes similar to current situation
+- **Thread Reconstruction**: Retrieve working states and events from a conversation thread
+
+## RetrieveByID
+
+Retrieve a specific memory record by its unique identifier.
+
+### Request Parameters
+
+<ParamField path="id" type="string" required>
+  Unique identifier of the memory record to retrieve
+</ParamField>
+
+<ParamField path="trust" type="TrustContext" required>
+  Trust context defining access permissions
+</ParamField>
+
+### Response
+
+<ResponseField name="record" type="bytes" required>
+  JSON-encoded MemoryRecord
+</ResponseField>
+
+### Example
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    req := &membranev1.RetrieveByIDRequest{
+        Id: "rec-abc-123-xyz",
+        Trust: &membranev1.TrustContext{
+            MaxSensitivity: "internal",
+            Authenticated:  true,
+            ActorId:        "agent-1",
+            Scopes:         []string{"team"},
+        },
+    }
+    
+    resp, err := client.RetrieveByID(ctx, req)
+    if err != nil {
+        if status.Code(err) == codes.NotFound {
+            fmt.Println("Record not found")
+        } else if status.Code(err) == codes.PermissionDenied {
+            fmt.Println("Access denied")
+        }
+        return
+    }
+    
+    var record MemoryRecord
+    json.Unmarshal(resp.Record, &record)
+    fmt.Printf("Retrieved record: %+v\n", record)
+    ```
+  </Tab>
+  
+  <Tab title="Python">
+    ```python
+    import json
+    from grpc import StatusCode
+    
+    req = membrane_pb2.RetrieveByIDRequest(
+        id="rec-abc-123-xyz",
+        trust=membrane_pb2.TrustContext(
+            max_sensitivity="internal",
+            authenticated=True,
+            actor_id="agent-1",
+            scopes=["team"]
+        )
+    )
+    
+    try:
+        resp = stub.RetrieveByID(req)
+        record = json.loads(resp.record)
+        print(f"Retrieved record: {record}")
+    except grpc.RpcError as e:
+        if e.code() == StatusCode.NOT_FOUND:
+            print("Record not found")
+        elif e.code() == StatusCode.PERMISSION_DENIED:
+            print("Access denied")
+    ```
+  </Tab>
+  
+  <Tab title="TypeScript">
+    ```typescript
+    const req: RetrieveByIDRequest = {
+      id: 'rec-abc-123-xyz',
+      trust: {
+        maxSensitivity: 'internal',
+        authenticated: true,
+        actorId: 'agent-1',
+        scopes: ['team'],
+      },
+    };
+    
+    client.retrieveByID(req, (err, resp) => {
+      if (err) {
+        if (err.code === grpc.status.NOT_FOUND) {
+          console.log('Record not found');
+        } else if (err.code === grpc.status.PERMISSION_DENIED) {
+          console.log('Access denied');
+        }
+        return;
+      }
+      
+      const record = JSON.parse(resp.record.toString());
+      console.log(`Retrieved record:`, record);
+    });
+    ```
+  </Tab>
+</Tabs>
+
+### Error Handling
+
+`RetrieveByID` may return the following errors:
+
+- **NOT_FOUND**: The specified record ID does not exist
+- **PERMISSION_DENIED**: The trust context does not have sufficient permissions to access the record (sensitivity level or scope mismatch)
+- **INVALID_ARGUMENT**: The provided ID format is invalid
+
+### Use Cases
+
+- **Direct Lookup**: Retrieve a specific memory when you have its ID
+- **Dependency Resolution**: Fetch records referenced in `depends_on` fields
+- **Audit Trails**: Look up specific events or outcomes by ID
+- **Reference Following**: Navigate memory graph by following record references
+
+## Access Control
+
+Both retrieval methods enforce access control based on the `TrustContext`:
+
+1. **Sensitivity Filtering**: Records with sensitivity higher than `max_sensitivity` are not returned
+2. **Scope Filtering**: Records are only returned if their scope matches one of the scopes in the trust context
+3. **Authentication**: The `authenticated` flag may affect what records are accessible
+
+### Example Access Control Scenarios
+
+```go
+// Public access - minimal permissions
+publicTrust := &membranev1.TrustContext{
+    MaxSensitivity: "public",
+    Authenticated:  false,
+    ActorId:        "anonymous",
+    Scopes:         []string{},
+}
+
+// Authenticated user - team access
+teamTrust := &membranev1.TrustContext{
+    MaxSensitivity: "internal",
+    Authenticated:  true,
+    ActorId:        "user-123",
+    Scopes:         []string{"team", "project-alpha"},
+}
+
+// System admin - full access
+adminTrust := &membranev1.TrustContext{
+    MaxSensitivity: "confidential",
+    Authenticated:  true,
+    ActorId:        "admin-1",
+    Scopes:         []string{"*"},
+}
+```
+
+## Performance Considerations
+
+- **Limit Parameter**: Use appropriate limits to avoid fetching too many records. Start with small limits (10-20) and increase as needed.
+- **Salience Threshold**: Setting a `min_salience` helps filter out less relevant or decayed records.
+- **Memory Type Filtering**: Narrow your search by specifying `memory_types` to reduce the search space.
+- **Caching**: Consider caching frequently accessed records on the client side, especially when using `RetrieveByID`.

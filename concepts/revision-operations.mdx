@@ -1,0 +1,609 @@
+---
+title: Revision Operations
+description: Learn how to supersede, fork, retract, merge, and contest memory records with full audit trails
+---
+
+## Overview
+
+Membrane provides five revision operations that enable safe, evidence-based knowledge updates. Every revision creates an audit trail and updates the record's revision status.
+
+<Warning>
+  **Episodic records cannot be revised.** They are immutable evidence. Only semantic, competence, and plan_graph records support revision operations.
+</Warning>
+
+## The Five Revision Operations
+
+<CardGroup cols={2}>
+  <Card title="Supersede" icon="arrow-right">
+    Replace an old record with a new version (replacement)
+  </Card>
+  
+  <Card title="Fork" icon="code-branch">
+    Create conditional variants that coexist (conditionality)
+  </Card>
+  
+  <Card title="Retract" icon="ban">
+    Mark a record as invalid without deleting it (invalidation)
+  </Card>
+  
+  <Card title="Merge" icon="code-merge">
+    Combine multiple records into one consolidated record (deduplication)
+  </Card>
+  
+  <Card title="Contest" icon="flag">
+    Mark a record as contested by conflicting evidence (uncertainty)
+  </Card>
+</CardGroup>
+
+---
+
+## 1. Supersede: Replace with New Version
+
+**Use Case:** When new evidence shows that an existing fact or procedure is outdated and should be replaced.
+
+### How It Works
+
+From `pkg/revision/supersede.go`:
+
+```go
+func (s *Service) Supersede(ctx context.Context, oldID string, newRecord *schema.MemoryRecord, actor, rationale string) (*schema.MemoryRecord, error) {
+    // Within a transaction:
+    // 1. Get old record and verify it's revisable (not episodic)
+    // 2. Retract old record (set salience to 0, status to "retracted")
+    // 3. For semantic payloads, record superseded-by link
+    // 4. Set provenance on new record to reference old
+    // 5. Add "supersedes" relation from new -> old
+    // 6. Add audit entries to both records
+    // 7. Store new record
+}
+```
+
+### Atomic Transaction Guarantee
+
+From the code:
+
+```go
+err := storage.WithTransaction(ctx, s.store, func(tx storage.Transaction) error {
+    // All operations happen atomically
+    // Partial revisions are never externally visible (RFC 15.7)
+})
+```
+
+### Example: Updating a User Preference
+
+```go
+import (
+    "context"
+    "github.com/GustyCube/membrane/pkg/schema"
+)
+
+// Old semantic record: user prefers React
+oldID := "sem-001"
+
+// New semantic record: user now prefers Vue
+newRecord := schema.NewMemoryRecord(
+    "", // ID will be generated
+    schema.MemoryTypeSemantic,
+    schema.SensitivityLow,
+    &schema.SemanticPayload{
+        Kind:      "semantic",
+        Subject:   "user",
+        Predicate: "prefers_frontend_framework",
+        Object:    "vue",
+        Validity: schema.Validity{
+            Mode: schema.ValidityModeGlobal,
+        },
+    },
+)
+
+// Supersede the old record
+superseded, err := revisionService.Supersede(
+    ctx,
+    oldID,
+    newRecord,
+    "agent-123",
+    "User switched to Vue for better reactivity",
+)
+```
+
+### Result State
+
+**Old Record After Supersede:**
+```json
+{
+  "id": "sem-001",
+  "salience": 0.0,
+  "payload": {
+    "kind": "semantic",
+    "subject": "user",
+    "predicate": "prefers_frontend_framework",
+    "object": "react",
+    "revision": {
+      "superseded_by": "sem-002",
+      "status": "retracted"
+    }
+  },
+  "audit_log": [
+    {
+      "action": "revise",
+      "actor": "agent-123",
+      "rationale": "superseded by sem-002: User switched to Vue"
+    }
+  ]
+}
+```
+
+**New Record:**
+```json
+{
+  "id": "sem-002",
+  "salience": 1.0,
+  "provenance": {
+    "sources": [{"kind": "event", "ref": "sem-001"}]
+  },
+  "relations": [
+    {"predicate": "supersedes", "target_id": "sem-001"}
+  ],
+  "payload": {
+    "kind": "semantic",
+    "revision": {
+      "supersedes": "sem-001",
+      "status": "active"
+    }
+  }
+}
+```
+
+---
+
+## 2. Fork: Create Conditional Variants
+
+**Use Case:** When a record is valid under certain conditions but needs a variant for different contexts.
+
+### How It Works
+
+From `pkg/revision/fork.go`:
+
+```go
+func (s *Service) Fork(ctx context.Context, sourceID string, forkedRecord *schema.MemoryRecord, actor, rationale string) (*schema.MemoryRecord, error) {
+    // Unlike Supersede, BOTH source and forked records remain active
+    // This is intended for conditional variants, not replacement
+    
+    // Within a transaction:
+    // 1. Get source record and verify it's revisable
+    // 2. Assign new ID to forked record
+    // 3. Create "derived_from" relation to source
+    // 4. Add audit entries to both records
+    // 5. Store forked record (source remains unchanged)
+}
+```
+
+### Example: Conditional Language Preference
+
+```go
+// Source record: user prefers Go for backend services
+sourceID := "sem-010"
+
+// Fork for data science projects
+forkedRecord := schema.NewMemoryRecord(
+    "",
+    schema.MemoryTypeSemantic,
+    schema.SensitivityLow,
+    &schema.SemanticPayload{
+        Kind:      "semantic",
+        Subject:   "user",
+        Predicate: "prefers_backend_language",
+        Object:    "python",
+        Validity: schema.Validity{
+            Mode: schema.ValidityModeConditional,
+            Conditions: map[string]any{
+                "project_kind": "data_science",
+            },
+        },
+    },
+)
+
+forked, err := revisionService.Fork(
+    ctx,
+    sourceID,
+    forkedRecord,
+    "agent-123",
+    "Different preference for data science projects",
+)
+```
+
+### Result: Both Records Active
+
+**Source Record (unchanged):**
+```json
+{
+  "id": "sem-010",
+  "salience": 0.8,
+  "payload": {
+    "subject": "user",
+    "predicate": "prefers_backend_language",
+    "object": "go",
+    "validity": {
+      "mode": "conditional",
+      "conditions": {"project_kind": "backend_service"}
+    }
+  },
+  "audit_log": [
+    {"action": "fork", "rationale": "forked to sem-011"}
+  ]
+}
+```
+
+**Forked Record:**
+```json
+{
+  "id": "sem-011",
+  "relations": [
+    {"predicate": "derived_from", "target_id": "sem-010"}
+  ],
+  "payload": {
+    "object": "python",
+    "validity": {
+      "mode": "conditional",
+      "conditions": {"project_kind": "data_science"}
+    }
+  }
+}
+```
+
+<Note>
+  Retrieval will select the appropriate record based on matching conditions in the query context.
+</Note>
+
+---
+
+## 3. Retract: Invalidate Without Deleting
+
+**Use Case:** When a record is no longer valid but should remain in the database for audit purposes.
+
+### How It Works
+
+From `pkg/revision/retract.go`:
+
+```go
+func (s *Service) Retract(ctx context.Context, id string, actor, rationale string) error {
+    // Within a transaction:
+    // 1. Get record and verify it's revisable
+    // 2. Set salience to 0 (will not appear in retrieval)
+    // 3. For semantic payloads, set status to "retracted"
+    // 4. Add audit entry documenting the retraction
+}
+```
+
+### Example: Retract Outdated Procedure
+
+```go
+err := revisionService.Retract(
+    ctx,
+    "comp-005",
+    "agent-123",
+    "Procedure no longer works with new toolchain version",
+)
+```
+
+### Result State
+
+```json
+{
+  "id": "comp-005",
+  "salience": 0.0,
+  "payload": {
+    "kind": "competence",
+    "revision": {
+      "status": "retracted"
+    }
+  },
+  "audit_log": [
+    {
+      "action": "revise",
+      "actor": "agent-123",
+      "rationale": "Procedure no longer works with new toolchain"
+    }
+  ]
+}
+```
+
+<Warning>
+  Retracted records have salience = 0 and will not appear in retrieval results, but they remain in the database for audit trails.
+</Warning>
+
+---
+
+## 4. Merge: Combine Duplicates
+
+**Use Case:** When multiple records represent the same knowledge and should be consolidated.
+
+### How It Works
+
+From `pkg/revision/merge.go`:
+
+```go
+func (s *Service) Merge(ctx context.Context, sourceIDs []string, mergedRecord *schema.MemoryRecord, actor, rationale string) (*schema.MemoryRecord, error) {
+    // Within a transaction:
+    // 1. Get all source records and verify they're revisable
+    // 2. Retract all source records (salience -> 0)
+    // 3. Set provenance on merged record to reference all sources
+    // 4. Add "merged_from" relations for each source
+    // 5. Add audit entries to all records
+    // 6. Store merged record
+}
+```
+
+### Example: Merge Duplicate Preferences
+
+```go
+// Three duplicate semantic records about the same preference
+sourceIDs := []string{"sem-020", "sem-021", "sem-022"}
+
+// Merged record consolidates all three
+mergedRecord := schema.NewMemoryRecord(
+    "",
+    schema.MemoryTypeSemantic,
+    schema.SensitivityLow,
+    &schema.SemanticPayload{
+        Kind:      "semantic",
+        Subject:   "user",
+        Predicate: "prefers_editor",
+        Object:    "vscode",
+        Validity: schema.Validity{
+            Mode: schema.ValidityModeGlobal,
+        },
+    },
+)
+
+merged, err := revisionService.Merge(
+    ctx,
+    sourceIDs,
+    mergedRecord,
+    "consolidation-service",
+    "Consolidating duplicate editor preferences",
+)
+```
+
+### Result: Source Records Retracted, Merged Record Active
+
+```json
+{
+  "id": "sem-023",
+  "salience": 1.0,
+  "provenance": {
+    "sources": [
+      {"kind": "event", "ref": "sem-020"},
+      {"kind": "event", "ref": "sem-021"},
+      {"kind": "event", "ref": "sem-022"}
+    ]
+  },
+  "relations": [
+    {"predicate": "merged_from", "target_id": "sem-020"},
+    {"predicate": "merged_from", "target_id": "sem-021"},
+    {"predicate": "merged_from", "target_id": "sem-022"}
+  ]
+}
+```
+
+---
+
+## 5. Contest: Mark as Uncertain
+
+**Use Case:** When conflicting evidence appears but it's unclear which record is correct.
+
+### How It Works
+
+From `pkg/revision/contest.go`:
+
+```go
+func (s *Service) Contest(ctx context.Context, contestedID string, conflictingID string, actor, rationale string) error {
+    // Within a transaction:
+    // 1. Get contested record and verify it's revisable
+    // 2. For semantic payloads, set status to "contested"
+    // 3. Add "contested_by" relation to conflicting record
+    // 4. Add audit entry documenting the contestation
+    // Note: Salience is NOT reduced - contested records remain retrievable
+}
+```
+
+### Example: Conflicting Environment Facts
+
+```go
+err := revisionService.Contest(
+    ctx,
+    "sem-030", // Contested record
+    "sem-031", // Conflicting evidence
+    "agent-123",
+    "New observation contradicts existing fact",
+)
+```
+
+### Result State
+
+**Contested Record:**
+```json
+{
+  "id": "sem-030",
+  "salience": 0.7,
+  "relations": [
+    {"predicate": "contested_by", "target_id": "sem-031"}
+  ],
+  "payload": {
+    "kind": "semantic",
+    "revision": {
+      "status": "contested"
+    }
+  },
+  "audit_log": [
+    {
+      "action": "revise",
+      "rationale": "Contested by sem-031: New observation contradicts"
+    }
+  ]
+}
+```
+
+<Note>
+  Contested records remain retrievable (salience unchanged) but their status signals uncertainty. Resolution requires manual review or additional evidence.
+</Note>
+
+---
+
+## Audit Trails
+
+Every revision operation appends entries to the `AuditLog` field:
+
+From `pkg/schema/audit.go`:
+
+```go
+type AuditEntry struct {
+    Action    AuditAction `json:"action"`    // create | revise | fork | merge | delete
+    Actor     string      `json:"actor"`     // Who performed the action
+    Timestamp time.Time   `json:"timestamp"`
+    Rationale string      `json:"rationale"` // Why the action was taken
+}
+```
+
+### Example Audit Log
+
+```json
+{
+  "id": "sem-040",
+  "audit_log": [
+    {
+      "action": "create",
+      "actor": "agent-123",
+      "timestamp": "2026-03-13T10:00:00Z",
+      "rationale": "Initial creation"
+    },
+    {
+      "action": "reinforce",
+      "actor": "agent-123",
+      "timestamp": "2026-03-13T11:00:00Z",
+      "rationale": "Used successfully in task completion"
+    },
+    {
+      "action": "revise",
+      "actor": "agent-123",
+      "timestamp": "2026-03-13T12:00:00Z",
+      "rationale": "superseded by sem-041: Updated with new evidence"
+    }
+  ]
+}
+```
+
+---
+
+## Transactional Guarantees
+
+<Accordion title="RFC 15.7 Compliance">
+  All revision operations execute within a single transaction:
+  
+  ```go
+  err := storage.WithTransaction(ctx, s.store, func(tx storage.Transaction) error {
+      // Multiple database operations are atomic
+      // If any operation fails, the entire transaction is rolled back
+      // Partial revisions are NEVER externally visible
+  })
+  ```
+  
+  This ensures that:
+  - Either the entire revision succeeds or the database remains unchanged
+  - No race conditions between concurrent revisions
+  - Audit trails are always consistent with record state
+</Accordion>
+
+---
+
+## Comparison Matrix
+
+| Operation | Old Record Salience | Old Record Status | New Record Created | Both Active |
+|-----------|---------------------|-------------------|--------------------|--------------|
+| **Supersede** | Set to 0 | `retracted` | Yes | No |
+| **Fork** | Unchanged | `active` | Yes | **Yes** |
+| **Retract** | Set to 0 | `retracted` | No | N/A |
+| **Merge** | All set to 0 | `retracted` | Yes | No |
+| **Contest** | Unchanged | `contested` | No | N/A |
+
+---
+
+## Best Practices
+
+<Steps>
+  <Step title="Always provide rationale">
+    Include meaningful rationale strings so audit trails are useful for debugging and compliance
+  </Step>
+  
+  <Step title="Use Fork for conditional knowledge">
+    When facts differ by context (e.g., OS, project type), fork instead of supersede
+  </Step>
+  
+  <Step title="Prefer Contest over immediate Supersede">
+    When evidence conflicts but the correct answer is unclear, contest first and resolve later
+  </Step>
+  
+  <Step title="Merge duplicates during consolidation">
+    Run consolidation jobs to identify and merge semantically identical records
+  </Step>
+  
+  <Step title="Never delete without retraction">
+    Use Retract to preserve audit trails before pruning via decay
+  </Step>
+</Steps>
+
+---
+
+## gRPC API Examples
+
+### Supersede via gRPC
+
+```typescript
+import { MembraneClient } from "@gustycube/membrane";
+
+const client = new MembraneClient("localhost:9090");
+
+const superseded = await client.supersede(
+  "sem-001",
+  newRecord,
+  "agent-123",
+  "User preference updated"
+);
+```
+
+### Fork via Python Client
+
+```python
+from membrane import MembraneClient
+
+client = MembraneClient("localhost:9090")
+
+forked = client.fork(
+    source_id="sem-010",
+    forked_record=forked_record,
+    actor="agent-123",
+    rationale="Conditional variant for data science"
+)
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Trust & Sensitivity" icon="shield" href="/concepts/trust-and-sensitivity">
+    Learn how sensitivity affects revision operations
+  </Card>
+  
+  <Card title="Decay & Consolidation" icon="clock" href="/concepts/decay-and-consolidation">
+    Understand when retracted records are pruned
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Full gRPC API documentation for revision methods
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    See how revisions fit into the storage plane
+  </Card>
+</CardGroup>

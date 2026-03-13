@@ -1,0 +1,425 @@
+---
+title: Configuration
+description: Configure Membrane for your deployment
+---
+
+Membrane is configured via YAML files, environment variables, and command-line flags. This guide covers all available configuration options.
+
+## Configuration Precedence
+
+Settings are applied in the following order (highest to lowest priority):
+
+1. **Command-line flags** (e.g., `--db`, `--addr`)
+2. **Environment variables** (e.g., `MEMBRANE_ENCRYPTION_KEY`)
+3. **YAML configuration file**
+4. **Default values**
+
+## YAML Configuration
+
+### Basic Example
+
+```yaml
+db_path: "membrane.db"
+listen_addr: ":9090"
+decay_interval: "1h"
+consolidation_interval: "6h"
+default_sensitivity: "low"
+selection_confidence_threshold: 0.7
+rate_limit_per_second: 100
+```
+
+### Full Example
+
+```yaml
+# Database
+db_path: "/var/lib/membrane/membrane.db"
+
+# gRPC Server
+listen_addr: ":9090"
+
+# Background Jobs
+decay_interval: "1h"          # Run decay every hour
+consolidation_interval: "6h"   # Run consolidation every 6 hours
+
+# Ingestion Defaults
+default_sensitivity: "low"     # Default sensitivity for new records
+
+# Retrieval
+selection_confidence_threshold: 0.7  # Minimum confidence for competence/plan selection
+
+# Security (prefer environment variables for keys)
+# encryption_key: ""           # or set MEMBRANE_ENCRYPTION_KEY
+# api_key: ""                  # or set MEMBRANE_API_KEY
+tls_cert_file: "/etc/membrane/tls/cert.pem"
+tls_key_file: "/etc/membrane/tls/key.pem"
+
+# Rate Limiting
+rate_limit_per_second: 100     # Max requests per second per client
+```
+
+### Loading Configuration
+
+```bash
+./bin/membraned --config /path/to/config.yaml
+```
+
+## Configuration Options
+
+### Database
+
+#### `db_path`
+
+- **Type:** String
+- **Default:** `"membrane.db"`
+- **Description:** Path to the SQLite database file. Created if it doesn't exist.
+
+```yaml
+db_path: "/var/lib/membrane/membrane.db"
+```
+
+**Command-line override:**
+
+```bash
+./bin/membraned --db /var/lib/membrane/membrane.db
+```
+
+### gRPC Server
+
+#### `listen_addr`
+
+- **Type:** String
+- **Default:** `":9090"`
+- **Description:** gRPC server listen address. Use `:PORT` to bind to all interfaces.
+
+```yaml
+listen_addr: ":9090"
+```
+
+**Command-line override:**
+
+```bash
+./bin/membraned --addr :8080
+```
+
+### Background Jobs
+
+#### `decay_interval`
+
+- **Type:** Duration
+- **Default:** `"1h"`
+- **Description:** How often the decay scheduler runs to apply salience decay.
+
+```yaml
+decay_interval: "30m"  # Run every 30 minutes
+```
+
+**Valid formats:** `"30s"`, `"5m"`, `"1h"`, `"24h"`
+
+#### `consolidation_interval`
+
+- **Type:** Duration
+- **Default:** `"6h"`
+- **Description:** How often the consolidation scheduler runs to extract durable knowledge from episodic traces.
+
+```yaml
+consolidation_interval: "3h"  # Run every 3 hours
+```
+
+### Ingestion
+
+#### `default_sensitivity`
+
+- **Type:** String
+- **Default:** `"low"`
+- **Description:** Default sensitivity level for ingested records.
+- **Valid values:** `"public"`, `"low"`, `"medium"`, `"high"`, `"hyper"`
+
+```yaml
+default_sensitivity: "medium"
+```
+
+### Retrieval
+
+#### `selection_confidence_threshold`
+
+- **Type:** Float
+- **Default:** `0.7`
+- **Range:** `0.0` to `1.0`
+- **Description:** Minimum confidence threshold for the retrieval selector to include competence or plan graph records.
+
+```yaml
+selection_confidence_threshold: 0.8
+```
+
+### Security
+
+<Warning>
+  Store encryption keys and API keys in environment variables, not in config files.
+</Warning>
+
+#### `encryption_key`
+
+- **Type:** String
+- **Default:** `""` (no encryption)
+- **Environment Variable:** `MEMBRANE_ENCRYPTION_KEY`
+- **Description:** SQLCipher encryption key for database at rest. Must be set to enable encryption.
+
+```yaml
+# NOT RECOMMENDED: Store in environment variable instead
+# encryption_key: "your-32-char-encryption-key-here"
+```
+
+**Recommended approach:**
+
+```bash
+export MEMBRANE_ENCRYPTION_KEY="your-32-char-encryption-key-here"
+./bin/membraned --config config.yaml
+```
+
+#### `tls_cert_file`
+
+- **Type:** String
+- **Default:** `""` (TLS disabled)
+- **Description:** Path to TLS certificate PEM file. Both `tls_cert_file` and `tls_key_file` must be set to enable TLS.
+
+```yaml
+tls_cert_file: "/etc/membrane/tls/cert.pem"
+tls_key_file: "/etc/membrane/tls/key.pem"
+```
+
+#### `tls_key_file`
+
+- **Type:** String
+- **Default:** `""` (TLS disabled)
+- **Description:** Path to TLS private key PEM file.
+
+```yaml
+tls_key_file: "/etc/membrane/tls/key.pem"
+```
+
+#### `api_key`
+
+- **Type:** String
+- **Default:** `""` (authentication disabled)
+- **Environment Variable:** `MEMBRANE_API_KEY`
+- **Description:** Bearer token for gRPC client authentication.
+
+```yaml
+# NOT RECOMMENDED: Store in environment variable instead
+# api_key: "your-secret-api-key"
+```
+
+**Recommended approach:**
+
+```bash
+export MEMBRANE_API_KEY="your-secret-api-key"
+./bin/membraned --config config.yaml
+```
+
+#### `rate_limit_per_second`
+
+- **Type:** Integer
+- **Default:** `100`
+- **Description:** Maximum requests per second per client. Set to `0` to disable rate limiting.
+
+```yaml
+rate_limit_per_second: 200
+```
+
+## Environment Variables
+
+### `MEMBRANE_ENCRYPTION_KEY`
+
+- **Description:** SQLCipher encryption key for the database.
+- **Usage:** Set this environment variable to enable database encryption.
+
+```bash
+export MEMBRANE_ENCRYPTION_KEY="your-32-char-encryption-key-here"
+./bin/membraned
+```
+
+### `MEMBRANE_API_KEY`
+
+- **Description:** Bearer token for gRPC client authentication.
+- **Usage:** Set this environment variable to enable API key authentication.
+
+```bash
+export MEMBRANE_API_KEY="your-secret-api-key"
+./bin/membraned
+```
+
+## Go Library Configuration
+
+When using Membrane as an embedded library:
+
+```go
+import (
+    "time"
+    "github.com/GustyCube/membrane/pkg/membrane"
+)
+
+cfg := membrane.DefaultConfig()
+cfg.DBPath = "/var/lib/membrane/my-agent.db"
+cfg.DecayInterval = 30 * time.Minute
+cfg.ConsolidationInterval = 3 * time.Hour
+cfg.DefaultSensitivity = "medium"
+cfg.SelectionConfidenceThreshold = 0.8
+cfg.EncryptionKey = os.Getenv("MEMBRANE_ENCRYPTION_KEY")
+cfg.RateLimitPerSecond = 200
+
+m, err := membrane.New(cfg)
+if err != nil {
+    log.Fatal(err)
+}
+defer m.Stop()
+```
+
+### Default Configuration
+
+Get a pre-populated config with defaults:
+
+```go
+cfg := membrane.DefaultConfig()
+// Defaults:
+// - DBPath: "membrane.db"
+// - ListenAddr: ":9090"
+// - DecayInterval: 1 * time.Hour
+// - ConsolidationInterval: 6 * time.Hour
+// - DefaultSensitivity: "low"
+// - SelectionConfidenceThreshold: 0.7
+// - RateLimitPerSecond: 100
+```
+
+### Loading from YAML
+
+```go
+cfg, err := membrane.LoadConfig("/path/to/config.yaml")
+if err != nil {
+    log.Fatal(err)
+}
+
+m, err := membrane.New(cfg)
+```
+
+## Production Deployment
+
+### Recommended Settings
+
+```yaml
+# Production configuration example
+db_path: "/var/lib/membrane/membrane.db"
+listen_addr: ":9090"
+
+# Tune for your workload
+decay_interval: "1h"
+consolidation_interval: "6h"
+
+# Security
+tls_cert_file: "/etc/membrane/tls/cert.pem"
+tls_key_file: "/etc/membrane/tls/key.pem"
+rate_limit_per_second: 200
+
+# Retrieval tuning
+selection_confidence_threshold: 0.75
+default_sensitivity: "low"
+```
+
+### Environment Setup
+
+```bash
+# /etc/membrane/environment
+MEMBRANE_ENCRYPTION_KEY=your-encryption-key
+MEMBRANE_API_KEY=your-api-key
+```
+
+### systemd Service
+
+```ini
+[Unit]
+Description=Membrane Memory Substrate
+After=network.target
+
+[Service]
+Type=simple
+User=membrane
+Group=membrane
+WorkingDirectory=/var/lib/membrane
+EnvironmentFile=/etc/membrane/environment
+ExecStart=/usr/local/bin/membraned --config /etc/membrane/config.yaml
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+```
+
+## Configuration Examples
+
+### Development
+
+```yaml
+db_path: "dev.db"
+listen_addr: ":9090"
+decay_interval: "5m"
+consolidation_interval: "15m"
+default_sensitivity: "low"
+rate_limit_per_second: 0  # No rate limiting for dev
+```
+
+### Staging
+
+```yaml
+db_path: "/var/lib/membrane/staging.db"
+listen_addr: ":9090"
+decay_interval: "30m"
+consolidation_interval: "3h"
+default_sensitivity: "low"
+tls_cert_file: "/etc/membrane/tls/cert.pem"
+tls_key_file: "/etc/membrane/tls/key.pem"
+rate_limit_per_second: 100
+```
+
+### Production
+
+```yaml
+db_path: "/var/lib/membrane/prod.db"
+listen_addr: ":9090"
+decay_interval: "1h"
+consolidation_interval: "6h"
+default_sensitivity: "medium"
+selection_confidence_threshold: 0.8
+tls_cert_file: "/etc/membrane/tls/cert.pem"
+tls_key_file: "/etc/membrane/tls/key.pem"
+rate_limit_per_second: 200
+```
+
+## Tuning Guidelines
+
+### Decay Interval
+
+- **Low traffic (< 100 records/day):** `"1h"` to `"6h"`
+- **Medium traffic (100-1000 records/day):** `"30m"` to `"1h"`
+- **High traffic (> 1000 records/day):** `"15m"` to `"30m"`
+
+### Consolidation Interval
+
+- **Development:** `"15m"` to `"1h"` (faster iteration)
+- **Production:** `"6h"` to `"24h"` (less overhead)
+
+### Selection Confidence Threshold
+
+- **Conservative (fewer false positives):** `0.8` to `0.9`
+- **Balanced:** `0.7` (default)
+- **Aggressive (more recall):** `0.5` to `0.6`
+
+### Rate Limiting
+
+- **Single client:** `0` (disabled) or `1000+`
+- **Multiple clients:** `100` to `500`
+- **Public-facing:** `10` to `100`
+
+## Next Steps
+
+- Learn about [Security Features](/guides/security)
+- Review [Running the Daemon](/guides/running-daemon)
+- Explore [Observability](/advanced/observability)

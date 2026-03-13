@@ -1,0 +1,625 @@
+---
+title: Trust & Sensitivity
+description: Understand sensitivity levels, trust contexts, and graduated retrieval gating
+---
+
+## Overview
+
+Membrane implements **trust-aware retrieval** where memory access is conditioned on the requester's trust level and authentication state. Sensitive records are filtered, redacted, or withheld based on the trust context provided with each retrieval request.
+
+This enables safe multi-tenant deployments, compliance with data protection regulations, and graduated information disclosure.
+
+---
+
+## Sensitivity Levels
+
+Every memory record has a `Sensitivity` classification that determines who can access it.
+
+From `pkg/schema/enums.go`:
+
+```go
+type Sensitivity string
+
+const (
+    SensitivityPublic Sensitivity = "public"
+    SensitivityLow    Sensitivity = "low"
+    SensitivityMedium Sensitivity = "medium"
+    SensitivityHigh   Sensitivity = "high"
+    SensitivityHyper  Sensitivity = "hyper"
+)
+```
+
+### Sensitivity Ordering
+
+From `pkg/retrieval/trust.go`:
+
+```go
+var sensitivityOrder = map[schema.Sensitivity]int{
+    schema.SensitivityPublic: 0,
+    schema.SensitivityLow:    1,
+    schema.SensitivityMedium: 2,
+    schema.SensitivityHigh:   3,
+    schema.SensitivityHyper:  4,
+}
+```
+
+Higher numeric values indicate more sensitive content requiring stricter access control.
+
+### When to Use Each Level
+
+<Tabs>
+  <Tab title="Public">
+    **Public (0)** — Information that can be freely shared
+    
+    **Examples:**
+    - General knowledge facts
+    - Public documentation references
+    - Non-sensitive preferences (e.g., preferred color scheme)
+    
+    **Access:** Available to all retrievers, including unauthenticated
+  </Tab>
+  
+  <Tab title="Low">
+    **Low (1)** — Minimal sensitivity, safe for most contexts
+    
+    **Examples:**
+    - User's preferred programming language
+    - Non-sensitive project preferences
+    - General troubleshooting procedures
+    
+    **Access:** Requires basic authentication
+  </Tab>
+  
+  <Tab title="Medium">
+    **Medium (2)** — Moderately sensitive, requires elevated trust
+    
+    **Examples:**
+    - Project-specific configuration
+    - Internal tool usage patterns
+    - Non-critical competence procedures
+    
+    **Access:** Requires authenticated user with appropriate scopes
+  </Tab>
+  
+  <Tab title="High">
+    **High (3)** — Highly sensitive, restricted access
+    
+    **Examples:**
+    - API keys or credentials (should be encrypted separately)
+    - Sensitive business logic
+    - Proprietary procedures
+    
+    **Access:** Requires elevated privileges and specific scopes
+  </Tab>
+  
+  <Tab title="Hyper">
+    **Hyper (4)** — Maximum protection, extremely restricted
+    
+    **Examples:**
+    - Security-critical procedures
+    - Compliance-sensitive data
+    - Records requiring human approval before access
+    
+    **Access:** Requires maximum trust level and explicit authorization
+  </Tab>
+</Tabs>
+
+---
+
+## Trust Context
+
+The `TrustContext` structure describes the requester's trust attributes.
+
+From `pkg/retrieval/trust.go`:
+
+```go
+type TrustContext struct {
+    // MaxSensitivity is the maximum sensitivity level the requester can access
+    MaxSensitivity schema.Sensitivity
+    
+    // Authenticated indicates whether the requester has been authenticated
+    Authenticated bool
+    
+    // ActorID identifies who is making the retrieval request
+    ActorID string
+    
+    // Scopes lists the scopes the requester is allowed to access
+    // Empty slice means all scopes are allowed
+    Scopes []string
+}
+```
+
+### Creating a Trust Context
+
+```go
+import (
+    "github.com/GustyCube/membrane/pkg/retrieval"
+    "github.com/GustyCube/membrane/pkg/schema"
+)
+
+// Low-trust context: unauthenticated, public-only access
+publicContext := retrieval.NewTrustContext(
+    schema.SensitivityPublic,
+    false,  // not authenticated
+    "guest",
+    nil,    // no scope restrictions
+)
+
+// Medium-trust context: authenticated user, limited scopes
+userContext := retrieval.NewTrustContext(
+    schema.SensitivityMedium,
+    true,   // authenticated
+    "user-123",
+    []string{"project-acme", "team-backend"},
+)
+
+// High-trust context: privileged agent, all scopes
+adminContext := retrieval.NewTrustContext(
+    schema.SensitivityHigh,
+    true,
+    "admin-agent",
+    []string{}, // empty = all scopes allowed
+)
+```
+
+---
+
+## Retrieval Gating
+
+### Full Access
+
+Records are returned in full if their sensitivity does NOT exceed the trust context's `MaxSensitivity`.
+
+From `pkg/retrieval/trust.go`:
+
+```go
+func (tc *TrustContext) Allows(record *schema.MemoryRecord) bool {
+    recordLevel := SensitivityLevel(record.Sensitivity)
+    maxLevel := SensitivityLevel(tc.MaxSensitivity)
+    
+    // Record sensitivity must be <= max allowed
+    return recordLevel <= maxLevel
+}
+```
+
+**Example:**
+
+```go
+record := &schema.MemoryRecord{
+    Sensitivity: schema.SensitivityMedium, // level 2
+    // ...
+}
+
+trustCtx := &retrieval.TrustContext{
+    MaxSensitivity: schema.SensitivityHigh, // level 3
+    // ...
+}
+
+trustCtx.Allows(record) // true: 2 <= 3
+```
+
+### Redacted Access
+
+**Graduated Exposure:** Records exactly ONE level above the trust threshold are returned in **redacted form** — metadata only, payload stripped.
+
+From `pkg/retrieval/trust.go`:
+
+```go
+func (tc *TrustContext) AllowsRedacted(record *schema.MemoryRecord) bool {
+    recordLevel := SensitivityLevel(record.Sensitivity)
+    maxLevel := SensitivityLevel(tc.MaxSensitivity)
+    
+    // Only allow redacted view if record is exactly one level above max
+    return recordLevel == maxLevel + 1
+}
+```
+
+**Example:**
+
+```go
+record := &schema.MemoryRecord{
+    ID:          "sem-001",
+    Type:        schema.MemoryTypeSemantic,
+    Sensitivity: schema.SensitivityMedium, // level 2
+    Confidence:  0.9,
+    Salience:    0.8,
+    Payload: &schema.SemanticPayload{
+        Subject:   "user",
+        Predicate: "api_key",
+        Object:    "secret-value", // Sensitive!
+    },
+}
+
+trustCtx := &retrieval.TrustContext{
+    MaxSensitivity: schema.SensitivityLow, // level 1
+}
+
+trustCtx.Allows(record)         // false: 2 > 1
+trustCtx.AllowsRedacted(record) // true: 2 == 1 + 1
+```
+
+**Redacted Response:**
+
+```json
+{
+  "id": "sem-001",
+  "type": "semantic",
+  "sensitivity": "medium",
+  "confidence": 0.9,
+  "salience": 0.8,
+  "payload": null,
+  "_redacted": true,
+  "_reason": "Record sensitivity exceeds trust level by one"
+}
+```
+
+<Note>
+  Redacted records show that relevant memory exists but protect sensitive content. This helps agents understand context boundaries without leaking data.
+</Note>
+
+### No Access
+
+Records more than one level above the trust threshold are **completely filtered out** — not returned at all.
+
+**Example:**
+
+```go
+record := &schema.MemoryRecord{
+    Sensitivity: schema.SensitivityHigh, // level 3
+}
+
+trustCtx := &retrieval.TrustContext{
+    MaxSensitivity: schema.SensitivityLow, // level 1
+}
+
+trustCtx.Allows(record)         // false: 3 > 1
+trustCtx.AllowsRedacted(record) // false: 3 != 1 + 1
+// Record is completely hidden from retrieval results
+```
+
+---
+
+## Scope-Based Filtering
+
+In addition to sensitivity, records can be scoped to specific projects, teams, or workspaces.
+
+From `pkg/schema/memory.go`:
+
+```go
+type MemoryRecord struct {
+    // ...
+    Scope string `json:"scope,omitempty"` // e.g., "project-acme", "team-backend"
+    // ...
+}
+```
+
+### Scope Matching Logic
+
+From `pkg/retrieval/trust.go`:
+
+```go
+func (tc *TrustContext) Allows(record *schema.MemoryRecord) bool {
+    // ... sensitivity check ...
+    
+    // Check scope: if scopes are specified, the record's scope must match one
+    // Records with empty scope are unscoped and available to all contexts
+    if len(tc.Scopes) > 0 && record.Scope != "" {
+        found := false
+        for _, s := range tc.Scopes {
+            if s == record.Scope {
+                found = true
+                break
+            }
+        }
+        if !found {
+            return false // Scope mismatch
+        }
+    }
+    
+    return true
+}
+```
+
+### Example: Multi-Tenant Isolation
+
+```go
+// Ingest a project-specific semantic record
+record1 := &schema.MemoryRecord{
+    Sensitivity: schema.SensitivityMedium,
+    Scope:       "project-acme",
+    // ...
+}
+
+record2 := &schema.MemoryRecord{
+    Sensitivity: schema.SensitivityMedium,
+    Scope:       "project-globex",
+    // ...
+}
+
+// Trust context limited to project-acme
+acmeContext := &retrieval.TrustContext{
+    MaxSensitivity: schema.SensitivityMedium,
+    Scopes:         []string{"project-acme"},
+}
+
+acmeContext.Allows(record1) // true: scope matches
+acmeContext.Allows(record2) // false: scope mismatch
+```
+
+<Warning>
+  **Unscoped records** (with `Scope = ""`) are visible to all trust contexts regardless of scope restrictions. Use scopes intentionally for isolation.
+</Warning>
+
+---
+
+## Retrieval API with Trust Context
+
+### Go Library
+
+```go
+import (
+    "context"
+    "github.com/GustyCube/membrane/pkg/retrieval"
+    "github.com/GustyCube/membrane/pkg/schema"
+)
+
+resp, err := membraneInstance.Retrieve(ctx, &retrieval.RetrieveRequest{
+    TaskDescriptor: "fix build error",
+    Trust: &retrieval.TrustContext{
+        MaxSensitivity: schema.SensitivityMedium,
+        Authenticated:  true,
+        ActorID:        "agent-123",
+        Scopes:         []string{"project-acme"},
+    },
+    MemoryTypes: []schema.MemoryType{
+        schema.MemoryTypeCompetence,
+        schema.MemoryTypeSemantic,
+    },
+})
+
+for _, r := range resp.Records {
+    if r.Redacted {
+        fmt.Printf("Redacted: %s (sensitivity too high)\n", r.ID)
+    } else {
+        fmt.Printf("Found: %s (type=%s)\n", r.ID, r.Type)
+    }
+}
+```
+
+### TypeScript Client
+
+```typescript
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const client = new MembraneClient("localhost:9090");
+
+const results = await client.retrieve("fix build error", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "agent-123",
+    scopes: ["project-acme"]
+  },
+  memoryTypes: ["competence", "semantic"]
+});
+
+results.forEach(record => {
+  if (record._redacted) {
+    console.log(`Redacted: ${record.id}`);
+  } else {
+    console.log(`Found: ${record.id}`);
+  }
+});
+```
+
+### Python Client
+
+```python
+from membrane import MembraneClient, Sensitivity, TrustContext
+
+client = MembraneClient("localhost:9090")
+
+results = client.retrieve(
+    task_descriptor="fix build error",
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.MEDIUM,
+        authenticated=True,
+        actor_id="agent-123",
+        scopes=["project-acme"]
+    ),
+    memory_types=["competence", "semantic"]
+)
+
+for record in results:
+    if record.redacted:
+        print(f"Redacted: {record.id}")
+    else:
+        print(f"Found: {record.id}")
+```
+
+---
+
+## Security Model Integration
+
+### gRPC Authentication
+
+Clients authenticate using bearer tokens in the `authorization` metadata:
+
+```go
+import "google.golang.org/grpc/metadata"
+
+md := metadata.New(map[string]string{
+    "authorization": "Bearer your-api-key-here",
+})
+ctx := metadata.NewOutgoingContext(context.Background(), md)
+```
+
+If authentication succeeds, the trust context's `Authenticated` field is set to `true`.
+
+### Encryption at Rest
+
+Sensitivity levels complement but do NOT replace encryption:
+
+- **Encryption at rest:** All records encrypted with SQLCipher regardless of sensitivity
+- **Sensitivity levels:** Control retrieval access, not storage encryption
+
+### Rate Limiting
+
+Configurable per-client rate limiting prevents abuse:
+
+```yaml
+rate_limit_per_second: 100
+```
+
+From `pkg/membrane/config.go`:
+
+```go
+type Config struct {
+    RateLimitPerSecond int `yaml:"rate_limit_per_second"`
+}
+```
+
+---
+
+## Sensitivity Assignment
+
+### During Ingestion
+
+Sensitivity is assigned by the Policy Plane during ingestion based on:
+
+1. **Tag-based rules** — Records with certain tags get higher sensitivity
+2. **Content analysis** — Heuristics detect potential secrets
+3. **Explicit override** — Caller specifies sensitivity in request
+
+From `pkg/ingestion/policy.go`:
+
+```go
+type PolicyRule struct {
+    TagPattern  string
+    Sensitivity schema.Sensitivity
+}
+
+// Example: tag "secret" -> high sensitivity
+if containsTag(tags, "secret") {
+    sensitivity = schema.SensitivityHigh
+}
+```
+
+### Manual Override
+
+```go
+rec, _ := membraneInstance.IngestEvent(ctx, ingestion.IngestEventRequest{
+    Source:      "agent-123",
+    EventKind:   "tool_call",
+    Ref:         "task#1",
+    Summary:     "API key generated",
+    Tags:        []string{"credentials"},
+    Sensitivity: schema.SensitivityHigh, // Explicit override
+})
+```
+
+---
+
+## Compliance Use Cases
+
+<AccordionGroup>
+  <Accordion title="GDPR: Right to Erasure">
+    Use `Scope` to isolate user data. When a user requests deletion:
+    
+    ```go
+    // Delete all records scoped to this user
+    records := store.List(ctx, storage.ListOptions{
+        Scope: "user-123",
+    })
+    for _, record := range records {
+        store.Delete(ctx, record.ID)
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="SOC 2: Access Controls">
+    Enforce sensitivity-based access:
+    - **Public/Low:** Standard user agents
+    - **Medium:** Authenticated agents with project scopes
+    - **High:** Admin agents with elevated privileges
+    - **Hyper:** Requires human approval via out-of-band process
+  </Accordion>
+  
+  <Accordion title="HIPAA: Protected Health Information">
+    Store PHI with `SensitivityHyper` and restrict retrieval:
+    
+    ```go
+    trustCtx := &retrieval.TrustContext{
+        MaxSensitivity: schema.SensitivityHyper,
+        Authenticated:  true,
+        Scopes:         []string{"patient-456"},
+    }
+    ```
+    
+    Audit trails automatically log all access.
+  </Accordion>
+  
+  <Accordion title="Multi-Tenant SaaS">
+    Use `Scope` to enforce tenant isolation:
+    
+    ```go
+    tenantAContext := &retrieval.TrustContext{
+        Scopes: []string{"tenant-A"},
+    }
+    
+    tenantBContext := &retrieval.TrustContext{
+        Scopes: []string{"tenant-B"},
+    }
+    ```
+    
+    Records from Tenant A are invisible to Tenant B's retrievals.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Best Practices
+
+<Steps>
+  <Step title="Default to Low sensitivity">
+    Use `low` as the default for most records. Elevate only when necessary.
+  </Step>
+  
+  <Step title="Use scopes for isolation">
+    Scope records to projects, teams, or users to enable fine-grained access control.
+  </Step>
+  
+  <Step title="Leverage redacted retrieval">
+    Use the +1 level redaction to signal context boundaries without leaking data.
+  </Step>
+  
+  <Step title="Audit high-sensitivity access">
+    Monitor audit logs for `SensitivityHigh` and `SensitivityHyper` retrievals.
+  </Step>
+  
+  <Step title="Never store raw secrets">
+    Even with `SensitivityHyper`, avoid storing credentials directly. Use references to external secret managers.
+  </Step>
+</Steps>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Decay & Consolidation" icon="clock" href="/concepts/decay-and-consolidation">
+    Learn how sensitivity affects decay and pruning
+  </Card>
+  
+  <Card title="Revision Operations" icon="arrows-rotate" href="/concepts/revision-operations">
+    Understand how sensitivity is preserved during revisions
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    See how trust-aware retrieval fits into the storage plane
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/guides/configuration">
+    Configure encryption, TLS, and API key authentication
+  </Card>
+</CardGroup>

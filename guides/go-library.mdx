@@ -1,0 +1,332 @@
+---
+title: Using the Go Library
+description: Embed Membrane directly in your Go applications
+---
+
+Membrane can be used as an embedded library without running the daemon. This gives you direct access to the memory substrate API from your Go code.
+
+## Installation
+
+```bash
+go get github.com/GustyCube/membrane
+```
+
+## Quick Start
+
+<Steps>
+  <Step title="Import the packages">
+    ```go
+    import (
+        "context"
+        "fmt"
+        "log"
+
+        "github.com/GustyCube/membrane/pkg/ingestion"
+        "github.com/GustyCube/membrane/pkg/membrane"
+        "github.com/GustyCube/membrane/pkg/retrieval"
+        "github.com/GustyCube/membrane/pkg/schema"
+    )
+    ```
+  </Step>
+
+  <Step title="Initialize Membrane">
+    ```go
+    cfg := membrane.DefaultConfig()
+    cfg.DBPath = "my-agent.db"
+
+    m, err := membrane.New(cfg)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer m.Stop()
+    ```
+  </Step>
+
+  <Step title="Start background jobs">
+    ```go
+    ctx := context.Background()
+    m.Start(ctx)
+    ```
+  </Step>
+</Steps>
+
+## Ingesting Memory
+
+### Episodic Events
+
+Capture raw experience from tool calls, errors, or observations:
+
+```go
+rec, err := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+    Source:    "build-agent",
+    EventKind: "tool_call",
+    Ref:       "build#42",
+    Summary:   "Executed go build, failed with linker error",
+    Tags:      []string{"build", "error"},
+})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Printf("Ingested episodic record: %s\n", rec.ID)
+```
+
+### Semantic Observations
+
+Store stable facts and preferences:
+
+```go
+rec, err := m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+    Source:    "build-agent",
+    Subject:   "user",
+    Predicate: "prefers_language",
+    Object:    "go",
+    Tags:      []string{"preferences"},
+})
+```
+
+### Working Memory
+
+Track in-flight task state:
+
+```go
+rec, err := m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
+    Source:      "build-agent",
+    ThreadID:    "session-001",
+    State:       schema.TaskStateExecuting,
+    NextActions: []string{"run tests", "deploy"},
+})
+```
+
+### Tool Outputs
+
+Capture tool invocation results:
+
+```go
+rec, err := m.IngestToolOutput(ctx, ingestion.IngestToolOutputRequest{
+    Source:    "build-agent",
+    ToolName:  "go_build",
+    Args: map[string]interface{}{
+        "package": "./cmd/server",
+        "flags":   []string{"-tags", "production"},
+    },
+    Result: map[string]interface{}{
+        "success": false,
+        "error":   "linker error: undefined reference",
+    },
+    Tags: []string{"build", "tool"},
+})
+```
+
+## Retrieving Memory
+
+### Trust-Gated Retrieval
+
+Retrieve memories filtered by sensitivity and trust context:
+
+```go
+resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+    TaskDescriptor: "fix build error",
+    Trust: &retrieval.TrustContext{
+        MaxSensitivity: schema.SensitivityMedium,
+        Authenticated:  true,
+    },
+    MemoryTypes: []schema.MemoryType{
+        schema.MemoryTypeCompetence,
+        schema.MemoryTypeSemantic,
+    },
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, r := range resp.Records {
+    fmt.Printf("Found: %s (type=%s, confidence=%.2f)\n", r.ID, r.Type, r.Confidence)
+}
+```
+
+### Retrieve by ID
+
+Fetch a specific record:
+
+```go
+rec, err := m.RetrieveByID(ctx, recordID, &retrieval.TrustContext{
+    MaxSensitivity: schema.SensitivityMedium,
+    Authenticated:  true,
+})
+```
+
+## Revision Operations
+
+Membrane provides explicit operations for revising knowledge:
+
+### Supersede
+
+Replace a record with a new version:
+
+```go
+superseded, err := m.Supersede(ctx, oldRecordID, newRec, "agent", "Go version updated")
+```
+
+### Fork
+
+Create a conditional variant:
+
+```go
+forked, err := m.Fork(ctx, sourceID, conditionalRec, "agent", "different for dev environment")
+```
+
+### Contest
+
+Mark conflicting evidence:
+
+```go
+err := m.Contest(ctx, recordID, conflictingRecordID, "agent", "new evidence contradicts this")
+```
+
+### Retract
+
+Soft-delete a record:
+
+```go
+err := m.Retract(ctx, recordID, "agent", "no longer accurate")
+```
+
+### Merge
+
+Consolidate duplicates:
+
+```go
+merged, err := m.Merge(ctx, []string{id1, id2, id3}, mergedRec, "agent", "consolidating duplicates")
+```
+
+## Reinforcement
+
+### Boost Salience
+
+Reinforce useful memories:
+
+```go
+err := m.Reinforce(ctx, recordID, "agent", "successfully used in task")
+```
+
+### Penalize
+
+Reduce salience of unhelpful records:
+
+```go
+err := m.Penalize(ctx, recordID, 0.2, "agent", "not relevant to task")
+```
+
+## Observability
+
+Collect metrics about memory substrate health:
+
+```go
+metrics, err := m.GetMetrics(ctx)
+if err != nil {
+    log.Fatal(err)
+}
+
+fmt.Printf("Total records: %d\n", metrics.TotalRecords)
+fmt.Printf("Retrieval usefulness: %.2f\n", metrics.RetrievalUsefulness)
+fmt.Printf("Competence success rate: %.2f\n", metrics.CompetenceSuccessRate)
+```
+
+## Configuration
+
+Customize Membrane behavior:
+
+```go
+cfg := membrane.DefaultConfig()
+cfg.DBPath = "my-agent.db"
+cfg.DecayInterval = 30 * time.Minute
+cfg.ConsolidationInterval = 3 * time.Hour
+cfg.DefaultSensitivity = "medium"
+cfg.SelectionConfidenceThreshold = 0.8
+cfg.EncryptionKey = os.Getenv("MEMBRANE_ENCRYPTION_KEY")
+
+m, err := membrane.New(cfg)
+```
+
+See the [Configuration Guide](/guides/configuration) for all available options.
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/GustyCube/membrane/pkg/ingestion"
+    "github.com/GustyCube/membrane/pkg/membrane"
+    "github.com/GustyCube/membrane/pkg/retrieval"
+    "github.com/GustyCube/membrane/pkg/schema"
+)
+
+func main() {
+    cfg := membrane.DefaultConfig()
+    cfg.DBPath = "my-agent.db"
+
+    m, err := membrane.New(cfg)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer m.Stop()
+
+    ctx := context.Background()
+    m.Start(ctx)
+
+    // Ingest an episodic event (tool call observation)
+    rec, _ := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+        Source:    "build-agent",
+        EventKind: "tool_call",
+        Ref:       "build#42",
+        Summary:   "Executed go build, failed with linker error",
+        Tags:      []string{"build", "error"},
+    })
+    fmt.Printf("Ingested episodic record: %s\n", rec.ID)
+
+    // Ingest a semantic observation
+    m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+        Source:    "build-agent",
+        Subject:   "user",
+        Predicate: "prefers_language",
+        Object:    "go",
+        Tags:      []string{"preferences"},
+    })
+
+    // Ingest working memory state
+    m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
+        Source:      "build-agent",
+        ThreadID:    "session-001",
+        State:       schema.TaskStateExecuting,
+        NextActions: []string{"run tests", "deploy"},
+    })
+
+    // Retrieve with trust context
+    resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+        TaskDescriptor: "fix build error",
+        Trust: &retrieval.TrustContext{
+            MaxSensitivity: schema.SensitivityMedium,
+            Authenticated:  true,
+        },
+        MemoryTypes: []schema.MemoryType{
+            schema.MemoryTypeCompetence,
+            schema.MemoryTypeSemantic,
+        },
+    })
+
+    for _, r := range resp.Records {
+        fmt.Printf("Found: %s (type=%s, confidence=%.2f)\n", r.ID, r.Type, r.Confidence)
+    }
+}
+```
+
+## Next Steps
+
+- Learn about [memory types and schemas](/concepts/memory-types)
+- Explore [revision operations](/concepts/revision-operations)
+- Understand [trust and sensitivity](/concepts/trust-and-sensitivity)

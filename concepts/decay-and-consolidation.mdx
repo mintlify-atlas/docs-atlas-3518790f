@@ -1,0 +1,701 @@
+---
+title: Decay & Consolidation
+description: Learn about salience decay, reinforcement, pruning, and automatic knowledge extraction
+---
+
+## Overview
+
+Membrane implements **time-based salience decay** to keep memory useful and prevent unbounded growth. Records that are not reinforced gradually lose salience and are eventually pruned. Meanwhile, **consolidation** automatically extracts durable knowledge from ephemeral episodic traces.
+
+This dual mechanism enables agents to learn continuously while maintaining memory hygiene.
+
+---
+
+## Salience: The Importance Score
+
+Every memory record has a `Salience` score that represents its current importance.
+
+From `pkg/schema/memory.go`:
+
+```go
+type MemoryRecord struct {
+    // ...
+    Salience float64 `json:"salience"` // [0, +inf), typically [0, 1]
+    // ...
+}
+```
+
+**Initial Salience:** Typically 1.0 when created.
+
+**Retrieval Ranking:** Higher salience records are ranked higher in retrieval results.
+
+**Pruning Threshold:** When salience drops to 0 (or below `MinSalience`), the record is eligible for pruning.
+
+---
+
+## Decay Curves
+
+Salience decays over time according to a configured decay curve.
+
+From `pkg/schema/lifecycle.go`:
+
+```go
+type DecayProfile struct {
+    Curve           DecayCurve `json:"curve"` // exponential | linear | custom
+    HalfLifeSeconds int        `json:"half_life_seconds"`
+    MinSalience     float64    `json:"min_salience,omitempty"`
+    MaxAgeSeconds   int        `json:"max_age_seconds,omitempty"`
+    ReinforcementGain float64  `json:"reinforcement_gain,omitempty"`
+}
+
+type DecayCurve string
+const (
+    DecayCurveExponential DecayCurve = "exponential"
+    DecayCurveLinear      DecayCurve = "linear"
+    DecayCurveCustom      DecayCurve = "custom"
+)
+```
+
+### Exponential Decay
+
+**Most common:** Gradual decay with a half-life parameter.
+
+From `pkg/decay/curves.go`:
+
+```go
+func ExponentialDecay(initialSalience, elapsedSeconds float64, profile schema.DecayProfile) float64 {
+    halfLife := float64(profile.HalfLifeSeconds)
+    if halfLife <= 0 {
+        return initialSalience
+    }
+    
+    // salience * exp(-ln(2) * elapsed / half_life)
+    decayed := initialSalience * math.Exp(-math.Ln2 * elapsedSeconds / halfLife)
+    
+    if decayed < profile.MinSalience {
+        return profile.MinSalience
+    }
+    return decayed
+}
+```
+
+**Formula:**
+
+$$
+\text{salience}(t) = \text{salience}_0 \cdot e^{-\frac{\ln(2) \cdot t}{t_{1/2}}}
+$$
+
+Where:
+- $\text{salience}_0$ = initial salience
+- $t$ = elapsed seconds since last reinforcement
+- $t_{1/2}$ = half-life in seconds
+
+**Example Decay:**
+
+```
+Initial salience: 1.0
+Half-life: 86400 seconds (1 day)
+
+After 1 day:  0.50
+After 2 days: 0.25
+After 3 days: 0.125
+After 7 days: 0.008
+```
+
+<Accordion title="Why Exponential?">
+  Exponential decay mirrors human memory: recent experiences decay slowly at first, then accelerate. This prevents abrupt forgetting while ensuring old, unused records eventually fade.
+</Accordion>
+
+### Linear Decay
+
+**Constant rate:** Salience decreases linearly over time.
+
+```go
+func LinearDecay(initialSalience, elapsedSeconds float64, profile schema.DecayProfile) float64 {
+    halfLife := float64(profile.HalfLifeSeconds)
+    if halfLife <= 0 {
+        return initialSalience
+    }
+    
+    // Decay rate: 0.5 / half_life per second
+    rate := 0.5 / halfLife
+    decayed := initialSalience - (rate * elapsedSeconds)
+    
+    if decayed < profile.MinSalience {
+        return profile.MinSalience
+    }
+    return decayed
+}
+```
+
+**Formula:**
+
+$$
+\text{salience}(t) = \max(\text{salience}_0 - r \cdot t, \text{MinSalience})
+$$
+
+Where $r$ = decay rate.
+
+### Custom Decay
+
+Implementations can define custom decay functions for specialized use cases.
+
+---
+
+## Decay Job
+
+The **Decay Job** runs periodically (default: every 1 hour) to apply decay to all non-pinned records.
+
+From `pkg/decay/decay.go`:
+
+```go
+func (s *Service) ApplyDecay(ctx context.Context, id string) error {
+    return storage.WithTransaction(ctx, s.store, func(tx storage.Transaction) error {
+        record, _ := tx.Get(ctx, id)
+        
+        now := time.Now().UTC()
+        elapsed := now.Sub(record.Lifecycle.LastReinforcedAt).Seconds()
+        
+        profile := record.Lifecycle.Decay
+        newSalience := record.Salience
+        
+        // Check max age
+        if profile.MaxAgeSeconds > 0 {
+            ageSeconds := now.Sub(record.CreatedAt).Seconds()
+            if ageSeconds >= float64(profile.MaxAgeSeconds) {
+                newSalience = 0 // Hard cutoff
+            }
+        }
+        
+        // Apply decay function
+        if newSalience > 0 {
+            decayFn := GetDecayFunc(profile.Curve)
+            newSalience = decayFn(record.Salience, elapsed, profile)
+        }
+        
+        // Update salience and add audit entry
+        tx.UpdateSalience(ctx, id, newSalience)
+        tx.AddAuditEntry(ctx, id, schema.AuditEntry{
+            Action:    schema.AuditActionDecay,
+            Actor:     "decay-service",
+            Rationale: fmt.Sprintf("decay: %.4f -> %.4f", record.Salience, newSalience),
+        })
+        
+        return nil
+    })
+}
+```
+
+### Pinned Records
+
+Records with `Lifecycle.Pinned = true` are **never decayed or pruned**.
+
+```go
+type Lifecycle struct {
+    Pinned bool `json:"pinned,omitempty"`
+    // ...
+}
+```
+
+**Use Cases:**
+- Critical system knowledge that must never be forgotten
+- Regulatory compliance records with legal retention requirements
+- User-bookmarked memories
+
+---
+
+## Reinforcement: Boosting Salience
+
+When a record is successfully used, its salience is **reinforced** (increased).
+
+From `pkg/decay/decay.go`:
+
+```go
+func (s *Service) Reinforce(ctx context.Context, id string, actor string, rationale string) error {
+    return storage.WithTransaction(ctx, s.store, func(tx storage.Transaction) error {
+        record, _ := tx.Get(ctx, id)
+        
+        gain := record.Lifecycle.Decay.ReinforcementGain
+        newSalience := record.Salience + gain
+        if newSalience > 1.0 {
+            newSalience = 1.0 // Cap at 1.0
+        }
+        
+        now := time.Now().UTC()
+        record.Salience = newSalience
+        record.Lifecycle.LastReinforcedAt = now
+        record.UpdatedAt = now
+        
+        tx.Update(ctx, record)
+        tx.AddAuditEntry(ctx, id, schema.AuditEntry{
+            Action:    schema.AuditActionReinforce,
+            Actor:     actor,
+            Rationale: rationale,
+        })
+        
+        return nil
+    })
+}
+```
+
+### When to Reinforce
+
+<Steps>
+  <Step title="After successful retrieval">
+    When a retrieved record contributes to task completion
+  </Step>
+  
+  <Step title="After competence success">
+    When a competence procedure successfully solves a problem
+  </Step>
+  
+  <Step title="After plan execution">
+    When a plan graph is executed and produces desired outcome
+  </Step>
+  
+  <Step title="Manual reinforcement">
+    When a user explicitly marks a record as important
+  </Step>
+</Steps>
+
+### Example: Reinforce After Use
+
+```go
+import (
+    "context"
+    "github.com/GustyCube/membrane/pkg/decay"
+)
+
+decayService := decay.NewService(store)
+
+// Retrieve competence record
+records := membraneInstance.Retrieve(ctx, retrievalRequest)
+
+// Use the competence to fix an error
+success := applyCompetence(records[0])
+
+if success {
+    // Reinforce the record
+    decayService.Reinforce(
+        ctx,
+        records[0].ID,
+        "agent-123",
+        "Competence successfully fixed linker error",
+    )
+}
+```
+
+---
+
+## Pruning: Deleting Zero-Salience Records
+
+The **Pruning Job** runs immediately after decay (default: every 1 hour) to delete records whose salience has dropped to zero.
+
+From `pkg/decay/decay.go`:
+
+```go
+func (s *Service) Prune(ctx context.Context) (int, error) {
+    records, _ := s.store.List(ctx, storage.ListOptions{})
+    
+    count := 0
+    for _, record := range records {
+        // Skip pinned records
+        if record.Lifecycle.Pinned {
+            continue
+        }
+        
+        // Skip if deletion policy is not auto_prune
+        if record.Lifecycle.DeletionPolicy != schema.DeletionPolicyAutoPrune {
+            continue
+        }
+        
+        // Prune if salience <= MinSalience AND < 0.001
+        floor := record.Lifecycle.Decay.MinSalience
+        if record.Salience <= floor && record.Salience < 0.001 {
+            s.deletePruned(ctx, record.ID)
+            count++
+        }
+    }
+    
+    return count, nil
+}
+```
+
+### Deletion Policies
+
+From `pkg/schema/enums.go`:
+
+```go
+type DeletionPolicy string
+
+const (
+    DeletionPolicyAutoPrune   DeletionPolicy = "auto_prune"
+    DeletionPolicyManualOnly  DeletionPolicy = "manual_only"
+    DeletionPolicyNever       DeletionPolicy = "never"
+)
+```
+
+**Auto-Prune (default):** Record is deleted when salience drops to zero.
+
+**Manual-Only:** Record is only deleted via explicit API call, not by decay.
+
+**Never:** Record cannot be deleted (useful for compliance).
+
+---
+
+## Consolidation: Extracting Durable Knowledge
+
+The **Consolidation Job** runs periodically (default: every 6 hours) to analyze episodic memory and extract higher-level knowledge.
+
+From `pkg/consolidation/consolidation.go`:
+
+```go
+type ConsolidationResult struct {
+    EpisodicCompressed  int // Episodic records compressed
+    SemanticExtracted   int // New semantic facts
+    CompetenceExtracted int // New competence procedures
+    PlanGraphsExtracted int // New plan graphs
+    DuplicatesResolved  int // Duplicates reinforced
+}
+
+func (s *Service) RunAll(ctx context.Context) (*ConsolidationResult, error) {
+    result := &ConsolidationResult{}
+    
+    // 1. Compress old episodic records
+    episodicCount, _ := s.episodic.Consolidate(ctx)
+    result.EpisodicCompressed = episodicCount
+    
+    // 2. Extract semantic facts from observations
+    semanticCount, semanticReinforced, _ := s.semantic.Consolidate(ctx)
+    result.SemanticExtracted = semanticCount
+    result.DuplicatesResolved += semanticReinforced
+    
+    // 3. Extract competence from repeated patterns
+    competenceCount, competenceReinforced, _ := s.competence.Consolidate(ctx)
+    result.CompetenceExtracted = competenceCount
+    result.DuplicatesResolved += competenceReinforced
+    
+    // 4. Extract plan graphs from tool sequences
+    planGraphCount, _ := s.plangraph.Consolidate(ctx)
+    result.PlanGraphsExtracted = planGraphCount
+    
+    return result, nil
+}
+```
+
+### Sub-Consolidators
+
+<Tabs>
+  <Tab title="Episodic Compression">
+    **Purpose:** Reduce salience of old episodic records.
+    
+    From `pkg/consolidation/episodic.go`:
+    
+    ```go
+    func (c *EpisodicConsolidator) Consolidate(ctx context.Context) (int, error) {
+        // Find episodic records older than 7 days
+        cutoff := time.Now().Add(-7 * 24 * time.Hour)
+        
+        records, _ := c.store.List(ctx, storage.ListOptions{
+            Type: schema.MemoryTypeEpisodic,
+        })
+        
+        count := 0
+        for _, record := range records {
+            if record.CreatedAt.Before(cutoff) {
+                // Reduce salience to 10% of current value
+                newSalience := record.Salience * 0.1
+                c.store.UpdateSalience(ctx, record.ID, newSalience)
+                count++
+            }
+        }
+        
+        return count, nil
+    }
+    ```
+    
+    Episodic records are intentionally short-lived. After they've served as evidence for learning, their salience is reduced.
+  </Tab>
+  
+  <Tab title="Semantic Extraction">
+    **Purpose:** Extract subject-predicate-object facts from episodic observations.
+    
+    From `pkg/consolidation/semantic.go`:
+    
+    ```go
+    func (c *SemanticConsolidator) Consolidate(ctx context.Context) (int, int, error) {
+        // Find episodic records with observations
+        records, _ := c.store.List(ctx, storage.ListOptions{
+            Type: schema.MemoryTypeEpisodic,
+        })
+        
+        extracted := 0
+        reinforced := 0
+        
+        for _, record := range records {
+            payload := record.Payload.(*schema.EpisodicPayload)
+            
+            // Analyze timeline for observation events
+            for _, event := range payload.Timeline {
+                if event.EventKind == "observation" {
+                    // Extract fact: subject, predicate, object
+                    fact := extractFact(event)
+                    
+                    // Check if equivalent semantic record exists
+                    existing := c.findEquivalent(ctx, fact)
+                    if existing != nil {
+                        // Reinforce existing
+                        c.decay.Reinforce(ctx, existing.ID, "consolidation", "duplicate observation")
+                        reinforced++
+                    } else {
+                        // Create new semantic record
+                        c.store.Create(ctx, fact)
+                        extracted++
+                    }
+                }
+            }
+        }
+        
+        return extracted, reinforced, nil
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Competence Extraction">
+    **Purpose:** Identify repeated successful patterns and create procedures.
+    
+    From `pkg/consolidation/competence.go`:
+    
+    ```go
+    func (c *CompetenceConsolidator) Consolidate(ctx context.Context) (int, int, error) {
+        // Find episodic records with successful outcomes
+        records, _ := c.store.List(ctx, storage.ListOptions{
+            Type: schema.MemoryTypeEpisodic,
+        })
+        
+        // Group by similarity (e.g., same error signature)
+        patterns := groupBySimilarity(records)
+        
+        extracted := 0
+        reinforced := 0
+        
+        for signature, episodes := range patterns {
+            if len(episodes) >= 3 { // Need 3+ successes to extract
+                // Extract common procedure
+                procedure := extractProcedure(episodes, signature)
+                
+                // Check if equivalent competence exists
+                existing := c.findEquivalent(ctx, procedure)
+                if existing != nil {
+                    // Reinforce and update success stats
+                    c.decay.Reinforce(ctx, existing.ID, "consolidation", "repeated success")
+                    reinforced++
+                } else {
+                    // Create new competence record
+                    c.store.Create(ctx, procedure)
+                    extracted++
+                }
+            }
+        }
+        
+        return extracted, reinforced, nil
+    }
+    ```
+    
+    **Threshold:** Requires 3+ successful episodes with the same trigger before extracting a competence record.
+  </Tab>
+  
+  <Tab title="Plan Graph Extraction">
+    **Purpose:** Convert tool call sequences into reusable plan graphs.
+    
+    From `pkg/consolidation/plangraph.go`:
+    
+    ```go
+    func (c *PlanGraphConsolidator) Consolidate(ctx context.Context) (int, error) {
+        // Find episodic records with tool graphs
+        records, _ := c.store.List(ctx, storage.ListOptions{
+            Type: schema.MemoryTypeEpisodic,
+        })
+        
+        extracted := 0
+        
+        for _, record := range records {
+            payload := record.Payload.(*schema.EpisodicPayload)
+            
+            if len(payload.ToolGraph) >= 3 { // Need 3+ tool calls
+                // Convert tool graph to plan graph
+                planGraph := convertToPlanGraph(payload.ToolGraph)
+                
+                // Store plan graph record
+                c.store.Create(ctx, planGraph)
+                extracted++
+            }
+        }
+        
+        return extracted, nil
+    }
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Configuration
+
+From `pkg/membrane/config.go`:
+
+```go
+type Config struct {
+    // How often the decay scheduler runs (default: 1h)
+    DecayInterval time.Duration `yaml:"decay_interval"`
+    
+    // How often the consolidation scheduler runs (default: 6h)
+    ConsolidationInterval time.Duration `yaml:"consolidation_interval"`
+}
+```
+
+**Example config.yaml:**
+
+```yaml
+decay_interval: "1h"
+consolidation_interval: "6h"
+```
+
+---
+
+## Lifecycle Example
+
+Let's trace a record's lifecycle from creation to pruning:
+
+<Steps>
+  <Step title="Day 0: Creation">
+    Episodic record created with salience = 1.0, half-life = 1 day
+    
+    ```json
+    {"id": "ep-001", "salience": 1.0, "created_at": "2026-03-13T10:00:00Z"}
+    ```
+  </Step>
+  
+  <Step title="Day 1: First Decay">
+    Decay job runs, salience drops to 0.5
+    
+    ```json
+    {"id": "ep-001", "salience": 0.5}
+    ```
+  </Step>
+  
+  <Step title="Day 2: Second Decay">
+    Salience drops to 0.25
+    
+    ```json
+    {"id": "ep-001", "salience": 0.25}
+    ```
+  </Step>
+  
+  <Step title="Day 3: Consolidation">
+    Consolidation extracts a competence record, reinforces episodic
+    
+    ```json
+    {"id": "ep-001", "salience": 0.35}
+    {"id": "comp-001", "salience": 1.0, "provenance": ["ep-001"]}
+    ```
+  </Step>
+  
+  <Step title="Day 7: Compression">
+    Episodic consolidator reduces old episodic records to 10%
+    
+    ```json
+    {"id": "ep-001", "salience": 0.035}
+    ```
+  </Step>
+  
+  <Step title="Day 10: Pruning">
+    Salience &lt; 0.001, record is pruned
+    
+    ```json
+    // ep-001 deleted
+    {"id": "comp-001", "salience": 0.65} // Competence remains
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Set appropriate half-lives" icon="clock">
+    - Episodic: 1-7 days
+    - Working: 1-7 days
+    - Semantic: 30-90 days
+    - Competence: 30-60 days
+    - Plan Graph: 60-90 days
+  </Card>
+  
+  <Card title="Reinforce actively" icon="arrow-up">
+    Call `Reinforce()` whenever a record contributes to success
+  </Card>
+  
+  <Card title="Pin critical knowledge" icon="thumbtack">
+    Use `Lifecycle.Pinned = true` for records that must never be forgotten
+  </Card>
+  
+  <Card title="Monitor consolidation" icon="chart-line">
+    Track `ConsolidationResult` metrics to ensure learning is happening
+  </Card>
+</CardGroup>
+
+---
+
+## Metrics
+
+From the `GetMetrics` endpoint:
+
+```json
+{
+  "avg_salience": 0.62,
+  "salience_distribution": {
+    "0.0-0.2": 12,
+    "0.2-0.4": 18,
+    "0.4-0.6": 30,
+    "0.6-0.8": 45,
+    "0.8-1.0": 37
+  },
+  "memory_growth_rate": 0.15,
+  "retrieval_usefulness": 0.42,
+  "competence_success_rate": 0.85,
+  "plan_reuse_frequency": 2.3,
+  "revision_rate": 0.08
+}
+```
+
+**Key Metrics:**
+
+| Metric | Description |
+|--------|-------------|
+| `avg_salience` | Average salience across all records |
+| `salience_distribution` | Histogram of salience buckets |
+| `memory_growth_rate` | Fraction of records created in last 24h |
+| `retrieval_usefulness` | Ratio of reinforce actions to total retrievals |
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Memory Types" icon="database" href="/concepts/memory-types">
+    See default decay profiles for each memory type
+  </Card>
+  
+  <Card title="Revision Operations" icon="arrows-rotate" href="/concepts/revision-operations">
+    Learn how retracted records are pruned
+  </Card>
+  
+  <Card title="Architecture" icon="sitemap" href="/concepts/architecture">
+    Understand how decay and consolidation jobs are scheduled
+  </Card>
+  
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore the Reinforce and Penalize gRPC methods
+  </Card>
+</CardGroup>

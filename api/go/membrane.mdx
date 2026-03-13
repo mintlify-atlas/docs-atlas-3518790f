@@ -1,0 +1,399 @@
+---
+title: Membrane
+description: Main Membrane type for managing the memory substrate
+---
+
+## Overview
+
+The `Membrane` type is the main entry point for the memory substrate. It wires together all subsystems (ingestion, retrieval, decay, revision, consolidation, and metrics) and exposes a unified API surface.
+
+## Type Definition
+
+```go
+package membrane
+
+type Membrane struct {
+	config *Config
+	store  storage.Store
+
+	ingestion     *ingestion.Service
+	retrieval     *retrieval.Service
+	decay         *decay.Service
+	revision      *revision.Service
+	consolidation *consolidation.Service
+	metrics       *metrics.Collector
+
+	decayScheduler  *decay.Scheduler
+	consolScheduler *consolidation.Scheduler
+}
+```
+
+## Config
+
+```go
+type Config struct {
+	// DBPath is the SQLite database path.
+	DBPath string `yaml:"db_path"`
+
+	// ListenAddr is the gRPC listen address (default: ":9090").
+	ListenAddr string `yaml:"listen_addr"`
+
+	// DecayInterval is how often the decay scheduler runs (default: 1h).
+	DecayInterval time.Duration `yaml:"decay_interval"`
+
+	// ConsolidationInterval is how often the consolidation scheduler runs (default: 6h).
+	ConsolidationInterval time.Duration `yaml:"consolidation_interval"`
+
+	// DefaultSensitivity is the ingestion default sensitivity level (default: "low").
+	DefaultSensitivity string `yaml:"default_sensitivity"`
+
+	// SelectionConfidenceThreshold is the minimum confidence for the retrieval
+	// selector to consider a competence or plan_graph candidate (default: 0.7).
+	SelectionConfidenceThreshold float64 `yaml:"selection_confidence_threshold"`
+
+	// EncryptionKey is the SQLCipher encryption key for the database.
+	// If empty, the database is not encrypted. Read from MEMBRANE_ENCRYPTION_KEY
+	// environment variable if not set in config.
+	EncryptionKey string `yaml:"encryption_key"`
+
+	// TLSCertFile is the path to the TLS certificate PEM file.
+	// If empty, the server runs without TLS.
+	TLSCertFile string `yaml:"tls_cert_file"`
+
+	// TLSKeyFile is the path to the TLS private key PEM file.
+	TLSKeyFile string `yaml:"tls_key_file"`
+
+	// APIKey is a shared secret for authenticating gRPC clients.
+	// If empty, authentication is disabled. Read from MEMBRANE_API_KEY
+	// environment variable if not set in config.
+	APIKey string `yaml:"api_key"`
+
+	// RateLimitPerSecond is the maximum requests per second per client.
+	// 0 means no rate limiting. Default: 100.
+	RateLimitPerSecond int `yaml:"rate_limit_per_second"`
+}
+```
+
+## Constructor Functions
+
+### New
+
+Initializes all subsystems from the provided Config and returns a ready-to-start Membrane instance.
+
+```go
+func New(cfg *Config) (*Membrane, error)
+```
+
+**Parameters:**
+- `cfg` - Configuration for the Membrane instance
+
+**Returns:**
+- `*Membrane` - Initialized Membrane instance
+- `error` - Error if initialization fails (e.g., invalid configuration, database errors)
+
+**Example:**
+
+```go
+import (
+    "github.com/GustyCube/membrane/pkg/membrane"
+)
+
+cfg := membrane.DefaultConfig()
+cfg.DBPath = "my-agent.db"
+cfg.DefaultSensitivity = "medium"
+
+m, err := membrane.New(cfg)
+if err != nil {
+    log.Fatal(err)
+}
+defer m.Stop()
+```
+
+### DefaultConfig
+
+Returns a Config populated with sensible defaults.
+
+```go
+func DefaultConfig() *Config
+```
+
+**Returns:**
+- `*Config` - Configuration with default values
+
+**Default Values:**
+- `DBPath`: "membrane.db"
+- `ListenAddr`: ":9090"
+- `DecayInterval`: 1 hour
+- `ConsolidationInterval`: 6 hours
+- `DefaultSensitivity`: "low"
+- `SelectionConfidenceThreshold`: 0.7
+- `RateLimitPerSecond`: 100
+
+### LoadConfig
+
+Reads a YAML configuration file and returns a Config. Fields not present in the file retain their default values.
+
+```go
+func LoadConfig(path string) (*Config, error)
+```
+
+**Parameters:**
+- `path` - Path to the YAML configuration file
+
+**Returns:**
+- `*Config` - Loaded configuration
+- `error` - Error if file cannot be read or parsed
+
+## Lifecycle Methods
+
+### Start
+
+Begins the background schedulers (decay, consolidation).
+
+```go
+func (m *Membrane) Start(ctx context.Context) error
+```
+
+**Parameters:**
+- `ctx` - Context for controlling the lifetime of background tasks
+
+**Returns:**
+- `error` - Error if startup fails
+
+**Example:**
+
+```go
+ctx := context.Background()
+if err := m.Start(ctx); err != nil {
+    log.Fatal(err)
+}
+```
+
+### Stop
+
+Gracefully shuts down schedulers and closes the store.
+
+```go
+func (m *Membrane) Stop() error
+```
+
+**Returns:**
+- `error` - Error if shutdown fails
+
+**Example:**
+
+```go
+defer m.Stop()
+```
+
+## Ingestion Methods
+
+See [Ingestion](/api/go/ingestion) for detailed documentation of ingestion request types.
+
+### IngestEvent
+
+Creates an episodic memory record from an event.
+
+```go
+func (m *Membrane) IngestEvent(ctx context.Context, req ingestion.IngestEventRequest) (*schema.MemoryRecord, error)
+```
+
+### IngestToolOutput
+
+Creates an episodic memory record from a tool invocation.
+
+```go
+func (m *Membrane) IngestToolOutput(ctx context.Context, req ingestion.IngestToolOutputRequest) (*schema.MemoryRecord, error)
+```
+
+### IngestObservation
+
+Creates a semantic memory record from an observation.
+
+```go
+func (m *Membrane) IngestObservation(ctx context.Context, req ingestion.IngestObservationRequest) (*schema.MemoryRecord, error)
+```
+
+### IngestOutcome
+
+Updates an existing episodic record with outcome data.
+
+```go
+func (m *Membrane) IngestOutcome(ctx context.Context, req ingestion.IngestOutcomeRequest) (*schema.MemoryRecord, error)
+```
+
+### IngestWorkingState
+
+Creates a working memory record from a working state snapshot.
+
+```go
+func (m *Membrane) IngestWorkingState(ctx context.Context, req ingestion.IngestWorkingStateRequest) (*schema.MemoryRecord, error)
+```
+
+## Retrieval Methods
+
+See [Retrieval](/api/go/retrieval) for detailed documentation of retrieval types.
+
+### Retrieve
+
+Performs layered retrieval as specified in RFC 15.8.
+
+```go
+func (m *Membrane) Retrieve(ctx context.Context, req *retrieval.RetrieveRequest) (*retrieval.RetrieveResponse, error)
+```
+
+### RetrieveByID
+
+Fetches a single record by ID with trust context gating.
+
+```go
+func (m *Membrane) RetrieveByID(ctx context.Context, id string, trust *retrieval.TrustContext) (*schema.MemoryRecord, error)
+```
+
+## Revision Methods
+
+See [Revision](/api/go/revision) for detailed documentation of revision operations.
+
+### Supersede
+
+Atomically replaces an old record with a new one.
+
+```go
+func (m *Membrane) Supersede(ctx context.Context, oldID string, newRec *schema.MemoryRecord, actor, rationale string) (*schema.MemoryRecord, error)
+```
+
+### Fork
+
+Creates a new record derived from an existing source record.
+
+```go
+func (m *Membrane) Fork(ctx context.Context, sourceID string, forkedRec *schema.MemoryRecord, actor, rationale string) (*schema.MemoryRecord, error)
+```
+
+### Retract
+
+Marks a record as retracted without deleting it.
+
+```go
+func (m *Membrane) Retract(ctx context.Context, id, actor, rationale string) error
+```
+
+### Merge
+
+Atomically combines multiple source records into a single merged record.
+
+```go
+func (m *Membrane) Merge(ctx context.Context, ids []string, mergedRec *schema.MemoryRecord, actor, rationale string) (*schema.MemoryRecord, error)
+```
+
+### Contest
+
+Marks a record as contested, indicating conflicting evidence exists.
+
+```go
+func (m *Membrane) Contest(ctx context.Context, id, contestingRef, actor, rationale string) error
+```
+
+## Decay Methods
+
+### Reinforce
+
+Boosts a record's salience.
+
+```go
+func (m *Membrane) Reinforce(ctx context.Context, id, actor, rationale string) error
+```
+
+### Penalize
+
+Reduces a record's salience by the given amount.
+
+```go
+func (m *Membrane) Penalize(ctx context.Context, id string, amount float64, actor, rationale string) error
+```
+
+## Metrics
+
+### GetMetrics
+
+Collects a point-in-time snapshot of substrate metrics.
+
+```go
+func (m *Membrane) GetMetrics(ctx context.Context) (*metrics.Snapshot, error)
+```
+
+## Complete Example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/GustyCube/membrane/pkg/ingestion"
+    "github.com/GustyCube/membrane/pkg/membrane"
+    "github.com/GustyCube/membrane/pkg/retrieval"
+    "github.com/GustyCube/membrane/pkg/schema"
+)
+
+func main() {
+    // Initialize Membrane
+    cfg := membrane.DefaultConfig()
+    cfg.DBPath = "my-agent.db"
+
+    m, err := membrane.New(cfg)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer m.Stop()
+
+    ctx := context.Background()
+    m.Start(ctx)
+
+    // Ingest an episodic event
+    rec, _ := m.IngestEvent(ctx, ingestion.IngestEventRequest{
+        Source:    "build-agent",
+        EventKind: "tool_call",
+        Ref:       "build#42",
+        Summary:   "Executed go build, failed with linker error",
+        Tags:      []string{"build", "error"},
+    })
+    fmt.Printf("Ingested episodic record: %s\n", rec.ID)
+
+    // Ingest a semantic observation
+    m.IngestObservation(ctx, ingestion.IngestObservationRequest{
+        Source:    "build-agent",
+        Subject:   "user",
+        Predicate: "prefers_language",
+        Object:    "go",
+        Tags:      []string{"preferences"},
+    })
+
+    // Ingest working memory state
+    m.IngestWorkingState(ctx, ingestion.IngestWorkingStateRequest{
+        Source:     "build-agent",
+        ThreadID:   "session-001",
+        State:      schema.TaskStateExecuting,
+        NextActions: []string{"run tests", "deploy"},
+    })
+
+    // Retrieve with trust context
+    resp, _ := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+        TaskDescriptor: "fix build error",
+        Trust: &retrieval.TrustContext{
+            MaxSensitivity: schema.SensitivityMedium,
+            Authenticated:  true,
+        },
+        MemoryTypes: []schema.MemoryType{
+            schema.MemoryTypeCompetence,
+            schema.MemoryTypeSemantic,
+        },
+    })
+
+    for _, r := range resp.Records {
+        fmt.Printf("Found: %s (type=%s, confidence=%.2f)\n", r.ID, r.Type, r.Confidence)
+    }
+}
+```

@@ -1,0 +1,522 @@
+---
+title: LLM Integration
+description: Integrate Membrane with language models for agentic memory
+---
+
+Membrane is designed to provide long-lived LLM agents with structured, revisable memory. This guide covers integration patterns for using Membrane with OpenAI, OpenRouter, and other LLM providers.
+
+## The Integration Pattern
+
+Membrane sits between your orchestration layer and the model call:
+
+<Steps>
+  <Step title="Ingest observations">
+    Capture tool outputs, events, and observations during execution.
+  </Step>
+
+  <Step title="Retrieve relevant memory">
+    Query Membrane for memories relevant to the next task.
+  </Step>
+
+  <Step title="Build LLM prompt">
+    Inject retrieved records into the prompt as context.
+  </Step>
+
+  <Step title="Execute and reinforce">
+    Use the model output to act, then ingest outcomes and reinforce useful records.
+  </Step>
+</Steps>
+
+## TypeScript Example
+
+### Basic Integration
+
+```ts
+import OpenAI from "openai";
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const memory = new MembraneClient("localhost:9090", {
+  apiKey: process.env.MEMBRANE_API_KEY
+});
+
+const llm = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  // OpenAI-compatible providers are supported here, e.g. OpenRouter:
+  // baseURL: "https://openrouter.ai/api/v1",
+});
+
+const records = await memory.retrieve("how should I handle this incident?", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "incident-agent",
+    scopes: ["prod"],
+  },
+  memoryTypes: ["semantic", "competence", "working"],
+  limit: 10,
+});
+
+const memoryContext = records.map((r) => JSON.stringify(r)).join("\n");
+
+const completion = await llm.chat.completions.create({
+  model: "gpt-5.2",
+  messages: [
+    { role: "system", content: "Use the memory context as evidence. Cite record ids." },
+    { role: "user", content: `Incident task:\n...\n\nMemory:\n${memoryContext}` },
+  ],
+});
+
+console.log(completion.choices[0]?.message?.content);
+memory.close();
+```
+
+### Full Agent Loop
+
+Complete workflow with ingestion and reinforcement:
+
+```ts
+import OpenAI from "openai";
+import { MembraneClient, Sensitivity } from "@gustycube/membrane";
+
+const memory = new MembraneClient("localhost:9090", { apiKey: process.env.MEMBRANE_API_KEY });
+const llm = new OpenAI({
+  apiKey: process.env.LLM_API_KEY,
+  // OpenAI-compatible providers are supported here, e.g. OpenRouter:
+  // baseURL: "https://openrouter.ai/api/v1",
+});
+
+const records = await memory.retrieve("plan a safe migration", {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "planner-agent",
+    scopes: ["project-acme"],
+  },
+  memoryTypes: ["semantic", "competence", "working"],
+  limit: 12,
+});
+
+const context = records.map((r) => JSON.stringify(r)).join("\n");
+
+const completion = await llm.chat.completions.create({
+  model: "gpt-5.2",
+  messages: [
+    { role: "system", content: "Use memory context as evidence. Cite record ids." },
+    { role: "user", content: `Task: plan migration\n\nMemory:\n${context}` },
+  ],
+});
+
+const answer = completion.choices[0]?.message?.content ?? "";
+const planRecord = await memory.ingestEvent("llm_plan", "migration-task-42", {
+  source: "planner-agent",
+  summary: answer.slice(0, 500),
+  tags: ["llm", "plan", "migration"],
+  scope: "project-acme",
+});
+await memory.reinforce(planRecord.id, "planner-agent", "plan used successfully");
+
+memory.close();
+```
+
+## Python Example
+
+### Basic Integration
+
+```python
+import os
+import json
+from openai import OpenAI
+from membrane import MembraneClient, Sensitivity, TrustContext
+
+# Initialize clients
+memory = MembraneClient(
+    "localhost:9090",
+    api_key=os.getenv("MEMBRANE_API_KEY"),
+)
+
+llm = OpenAI(
+    api_key=os.getenv("LLM_API_KEY"),
+    # For OpenRouter or other OpenAI-compatible providers:
+    # base_url="https://openrouter.ai/api/v1",
+)
+
+# Retrieve relevant memories
+records = memory.retrieve(
+    "how should I handle this incident?",
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.MEDIUM,
+        authenticated=True,
+        actor_id="incident-agent",
+        scopes=["prod"],
+    ),
+    memory_types=["semantic", "competence", "working"],
+    limit=10,
+)
+
+# Build context from memories
+memory_context = "\n".join(json.dumps(r.to_dict()) for r in records)
+
+# Generate completion with memory context
+completion = llm.chat.completions.create(
+    model="gpt-5.2",
+    messages=[
+        {
+            "role": "system",
+            "content": "Use the memory context as evidence. Cite record ids.",
+        },
+        {
+            "role": "user",
+            "content": f"Incident task:\n...\n\nMemory:\n{memory_context}",
+        },
+    ],
+)
+
+print(completion.choices[0].message.content)
+memory.close()
+```
+
+### Full Agent Loop
+
+```python
+import os
+import json
+from openai import OpenAI
+from membrane import MembraneClient, Sensitivity, TrustContext
+
+memory = MembraneClient("localhost:9090", api_key=os.getenv("MEMBRANE_API_KEY"))
+llm = OpenAI(
+    api_key=os.getenv("LLM_API_KEY"),
+    # OpenAI-compatible providers are supported:
+    # base_url="https://openrouter.ai/api/v1",
+)
+
+# Step 1: Retrieve relevant memories
+records = memory.retrieve(
+    "plan a safe database migration",
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.MEDIUM,
+        authenticated=True,
+        actor_id="planner-agent",
+        scopes=["project-acme"],
+    ),
+    memory_types=["semantic", "competence", "working"],
+    limit=12,
+)
+
+# Step 2: Build context
+context = "\n".join(json.dumps(r.to_dict()) for r in records)
+
+# Step 3: Generate plan with LLM
+completion = llm.chat.completions.create(
+    model="gpt-5.2",
+    messages=[
+        {"role": "system", "content": "Use memory context as evidence. Cite record ids."},
+        {"role": "user", "content": f"Task: plan migration\n\nMemory:\n{context}"},
+    ],
+)
+
+answer = completion.choices[0].message.content or ""
+
+# Step 4: Ingest the plan as a new event
+plan_record = memory.ingest_event(
+    event_kind="llm_plan",
+    ref="migration-task-42",
+    source="planner-agent",
+    summary=answer[:500],
+    tags=["llm", "plan", "migration"],
+    scope="project-acme",
+)
+
+# Step 5: Reinforce the plan if successful
+memory.reinforce(plan_record.id, "planner-agent", "plan used successfully")
+
+memory.close()
+```
+
+## Integration Patterns
+
+### 1. Context Injection
+
+Retrieve relevant memories and inject them into the system prompt:
+
+```ts
+const records = await memory.retrieve(task, { trust, memoryTypes: ["semantic", "competence"], limit: 10 });
+const context = records.map(r => `[${r.type}] ${r.id}: ${JSON.stringify(r.payload)}`).join("\n");
+
+const messages = [
+  { role: "system", content: `You are an agent with access to memory:\n${context}` },
+  { role: "user", content: task }
+];
+```
+
+### 2. Retrieval-Augmented Generation (RAG)
+
+Use Membrane as a typed RAG pipeline:
+
+```python
+# Retrieve competence records for similar tasks
+records = memory.retrieve(
+    task_description,
+    trust=trust,
+    memory_types=[MemoryType.COMPETENCE],
+    limit=5,
+)
+
+# Build prompt with past successes
+context = "\n".join(
+    f"Past success: {r.payload.get('procedure')}" for r in records
+)
+```
+
+### 3. Self-Correcting Loops
+
+Ingest outcomes and revise knowledge when errors occur:
+
+```ts
+const planRecord = await memory.ingestEvent("llm_plan", taskId, { summary: plan });
+
+try {
+  await executePlan(plan);
+  await memory.reinforce(planRecord.id, "agent", "plan succeeded");
+} catch (error) {
+  await memory.penalize(planRecord.id, 0.5, "agent", "plan failed");
+  
+  // Ingest the error as a new episodic event
+  await memory.ingestEvent("error", taskId, { summary: error.message, tags: ["failure"] });
+}
+```
+
+### 4. Trust-Gated Context
+
+Filter memories by sensitivity level:
+
+```python
+# High-trust context for sensitive operations
+records = memory.retrieve(
+    "access production database",
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.HIGH,
+        authenticated=True,
+        actor_id="admin-agent",
+        scopes=["prod"],
+    ),
+)
+
+# Low-trust context for public-facing tasks
+records = memory.retrieve(
+    "generate marketing copy",
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.LOW,
+        authenticated=False,
+    ),
+)
+```
+
+### 5. Multi-Turn Conversations
+
+Maintain working memory across turns:
+
+```ts
+for (const turn of conversation) {
+  // Update working memory
+  await memory.ingestWorkingState(sessionId, "conversing", {
+    nextActions: ["respond to user"],
+    contextSummary: turn.userMessage,
+  });
+
+  // Retrieve relevant memories
+  const records = await memory.retrieve(turn.userMessage, { trust, limit: 5 });
+  const context = records.map(r => JSON.stringify(r)).join("\n");
+
+  // Generate response
+  const response = await llm.chat.completions.create({
+    model: "gpt-5.2",
+    messages: [
+      { role: "system", content: `Memory:\n${context}` },
+      { role: "user", content: turn.userMessage },
+    ],
+  });
+
+  // Ingest the turn as an event
+  await memory.ingestEvent("conversation_turn", sessionId, {
+    summary: `User: ${turn.userMessage}\nAgent: ${response.choices[0].message.content}`,
+  });
+}
+```
+
+## OpenAI-Compatible Providers
+
+Membrane works with any OpenAI-compatible API:
+
+<Tabs>
+  <Tab title="OpenRouter">
+    ```ts
+    const llm = new OpenAI({
+      apiKey: process.env.OPENROUTER_API_KEY,
+      baseURL: "https://openrouter.ai/api/v1",
+    });
+    ```
+  </Tab>
+
+  <Tab title="Anthropic (via SDK)">
+    ```ts
+    import Anthropic from "@anthropic-ai/sdk";
+
+    const llm = new Anthropic({
+      apiKey: process.env.ANTHROPIC_API_KEY,
+    });
+
+    const response = await llm.messages.create({
+      model: "claude-3-5-sonnet-20241022",
+      max_tokens: 1024,
+      messages: [{ role: "user", content: `Memory:\n${context}\n\nTask: ${task}` }],
+    });
+    ```
+  </Tab>
+
+  <Tab title="Local Models (Ollama)">
+    ```ts
+    const llm = new OpenAI({
+      apiKey: "ollama", // dummy key
+      baseURL: "http://localhost:11434/v1",
+    });
+    ```
+  </Tab>
+</Tabs>
+
+## Best Practices
+
+### 1. Cite Record IDs
+
+Instruct the LLM to cite memory record IDs in its responses:
+
+```ts
+const systemPrompt = `
+You are an agent with access to memory records.
+When using information from memory, cite the record ID in your response.
+
+Example: "According to record abc-123, the user prefers Go for backend services."
+`;
+```
+
+### 2. Reinforce Useful Memories
+
+Track which records the LLM actually uses:
+
+```ts
+const response = await llm.chat.completions.create({ ... });
+const citedIds = extractRecordIds(response.choices[0].message.content);
+
+for (const id of citedIds) {
+  await memory.reinforce(id, "agent", "used in LLM response");
+}
+```
+
+### 3. Consolidate Learning
+
+Let background consolidation extract durable knowledge:
+
+```yaml
+# config.yaml
+consolidation_interval: "6h"  # Run consolidation every 6 hours
+```
+
+Consolidation extracts:
+- **Semantic facts** from episodic traces
+- **Competence records** from successful procedures
+- **Plan graphs** from multi-step workflows
+
+### 4. Use Memory Types Strategically
+
+| Memory Type | Use Case |
+|-------------|----------|
+| **Episodic** | Raw execution traces, debugging context |
+| **Working** | Current task state, in-flight operations |
+| **Semantic** | Stable facts, user preferences, domain knowledge |
+| **Competence** | Learned procedures, success/failure rates |
+| **Plan Graph** | Multi-step workflows, dependencies, checkpoints |
+
+### 5. Scope Sensitive Data
+
+Use scopes to isolate project or customer data:
+
+```ts
+const projectRecords = await memory.retrieve(task, {
+  trust: {
+    max_sensitivity: Sensitivity.MEDIUM,
+    authenticated: true,
+    actor_id: "agent",
+    scopes: ["project-acme"],  // Only retrieve project-acme records
+  },
+});
+```
+
+## Advanced Patterns
+
+### Competence Learning
+
+Capture procedures and track success rates:
+
+```ts
+// Ingest a procedure
+const proc = await memory.ingestEvent("procedure", "fix-cache-error", {
+  summary: "Clear cache, rebuild with --clean flag",
+  tags: ["procedure", "cache"],
+});
+
+// Record outcome
+try {
+  await executeProcedure();
+  await memory.ingestOutcome(proc.id, "success");
+  await memory.reinforce(proc.id, "agent", "procedure worked");
+} catch (error) {
+  await memory.ingestOutcome(proc.id, "failure");
+  await memory.penalize(proc.id, 0.3, "agent", "procedure failed");
+}
+```
+
+### Plan Graph Execution
+
+Retrieve and execute multi-step plans:
+
+```ts
+const planRecords = await memory.retrieve("deploy to production", {
+  trust,
+  memoryTypes: ["plan_graph"],
+  limit: 1,
+});
+
+const plan = planRecords[0]?.payload;
+for (const step of plan.steps) {
+  await executeStep(step);
+  await memory.ingestEvent("plan_step_complete", step.id, { summary: step.name });
+}
+```
+
+### Contested Knowledge
+
+Handle conflicting evidence:
+
+```ts
+// Retrieve a fact
+const oldFact = await memory.retrieveById(factId);
+
+// New evidence contradicts it
+const newEvidence = await memory.ingestEvent("observation", "task-99", {
+  summary: "User now prefers TypeScript",
+});
+
+// Contest the old fact
+await memory.contest(oldFact.id, newEvidence.id, "agent", "preference changed");
+
+// Supersede with updated fact
+const updatedFact = { ...oldFact, payload: { prefers_language: "typescript" } };
+await memory.supersede(oldFact.id, updatedFact, "agent", "updated preference");
+```
+
+## Next Steps
+
+- Learn about [Memory Types](/concepts/memory-types)
+- Explore [Revision Operations](/concepts/revision-operations)
+- Understand [Trust and Sensitivity](/concepts/trust-and-sensitivity)
+- Review [TypeScript Client](/guides/typescript-client) or [Python Client](/guides/python-client)

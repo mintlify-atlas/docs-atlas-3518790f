@@ -1,0 +1,540 @@
+---
+title: Python Client
+description: Use Membrane from Python applications
+---
+
+The Python client provides a Pythonic API for communicating with the Membrane daemon over gRPC.
+
+## Installation
+
+```bash
+pip install -e clients/python
+```
+
+For development with testing tools:
+
+```bash
+pip install -e "clients/python[dev]"
+```
+
+## Requirements
+
+- Python >= 3.10
+- `grpcio >= 1.78.0`
+- `protobuf >= 6.31.1`
+- A running Membrane daemon (default: `localhost:9090`)
+
+## Quick Start
+
+```python
+from membrane import MembraneClient, Sensitivity, TrustContext
+
+# Connect to the running Membrane daemon
+client = MembraneClient("localhost:9090")
+
+# Ingest an event
+record = client.ingest_event(
+    event_kind="file_edit",
+    ref="src/main.py",
+    summary="Refactored authentication module",
+    sensitivity=Sensitivity.LOW,
+)
+print(f"Created record: {record.id}")
+
+# Retrieve memories relevant to a task
+trust = TrustContext(
+    max_sensitivity=Sensitivity.MEDIUM,
+    authenticated=True,
+    actor_id="agent-1",
+)
+records = client.retrieve("fix the login bug", trust=trust, limit=5)
+for r in records:
+    print(f"  [{r.type.value}] {r.id} (salience={r.salience:.2f})")
+
+# Reinforce a useful memory
+client.reinforce(record.id, actor="agent-1", rationale="Used successfully")
+
+# Clean up
+client.close()
+```
+
+## Connection
+
+### Basic Connection
+
+```python
+from membrane import MembraneClient
+
+client = MembraneClient("localhost:9090")
+```
+
+### With Authentication
+
+```python
+import os
+
+client = MembraneClient(
+    "localhost:9090",
+    api_key=os.getenv("MEMBRANE_API_KEY"),
+)
+```
+
+### With TLS
+
+```python
+client = MembraneClient(
+    "membrane.example.com:443",
+    tls=True,                        # use TLS transport
+    tls_ca_cert="/path/to/ca.pem",   # optional custom CA
+    api_key="your-api-key",          # Bearer token auth
+    timeout=10.0,                    # default timeout in seconds
+)
+```
+
+### Context Manager
+
+Use the context manager protocol for automatic cleanup:
+
+```python
+with MembraneClient("localhost:9090") as client:
+    record = client.ingest_observation(
+        subject="user",
+        predicate="prefers",
+        obj={"language": "Python"},
+        sensitivity=Sensitivity.LOW,
+    )
+```
+
+## Ingestion
+
+### Ingest Event
+
+Capture episodic events:
+
+```python
+record = client.ingest_event(
+    event_kind="tool_call",
+    ref="task#1",
+    summary="Ran database migration successfully",
+    tags=["db", "migration"],
+    sensitivity=Sensitivity.LOW,
+    source="migration-agent",
+)
+
+print(f"Created record: {record.id}")
+```
+
+### Ingest Tool Output
+
+Capture tool invocation results:
+
+```python
+record = client.ingest_tool_output(
+    tool_name="pip_install",
+    args={"packages": ["flask", "sqlalchemy"]},
+    result={"success": True, "installed": 42},
+    tags=["dependencies", "pip"],
+    source="package-agent",
+)
+```
+
+### Ingest Observation
+
+Store semantic facts as subject-predicate-object triples:
+
+```python
+record = client.ingest_observation(
+    subject="user",
+    predicate="prefers_language",
+    obj="python",
+    tags=["preferences"],
+    sensitivity=Sensitivity.LOW,
+)
+```
+
+### Ingest Working State
+
+Snapshot task state:
+
+```python
+record = client.ingest_working_state(
+    thread_id="session-001",
+    state="executing",
+    next_actions=["run tests", "deploy"],
+    open_questions=["Should we notify users?"],
+    context_summary="Migration in progress",
+    tags=["session"],
+)
+```
+
+### Ingest Outcome
+
+Attach outcome to an existing record:
+
+```python
+from membrane import OutcomeStatus
+
+record = client.ingest_outcome(
+    target_record_id=existing_record_id,
+    outcome_status=OutcomeStatus.SUCCESS,
+    source="build-agent",
+)
+```
+
+## Retrieval
+
+### Basic Retrieval
+
+```python
+from membrane import TrustContext, Sensitivity
+
+trust = TrustContext(
+    max_sensitivity=Sensitivity.MEDIUM,
+    authenticated=True,
+    actor_id="error-agent",
+)
+
+records = client.retrieve("how to handle errors", trust=trust, limit=10)
+
+for record in records:
+    print(f"[{record.type.value}] {record.id} (salience={record.salience:.2f})")
+```
+
+### Filter by Memory Type
+
+```python
+from membrane import MemoryType
+
+records = client.retrieve(
+    "database operations",
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.MEDIUM,
+        authenticated=True,
+        actor_id="db-agent",
+    ),
+    memory_types=[MemoryType.SEMANTIC, MemoryType.COMPETENCE],
+    limit=5,
+)
+```
+
+### Retrieve with Selection Metadata
+
+```python
+result = client.retrieve_with_selection(
+    "plan deployment",
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.MEDIUM,
+        authenticated=True,
+        actor_id="deploy-agent",
+        scopes=["prod"],
+    ),
+    limit=10,
+)
+
+print(f"Found {len(result.records)} records")
+if result.selection:
+    print(f"Selection confidence: {result.selection.confidence}")
+```
+
+### Retrieve by ID
+
+```python
+record = client.retrieve_by_id(
+    record_id,
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.MEDIUM,
+        authenticated=True,
+        actor_id="agent-1",
+    ),
+)
+```
+
+## Revision Operations
+
+### Supersede
+
+Replace a record with a new version:
+
+```python
+updated = client.supersede(
+    old_id=old_record_id,
+    new_record=new_record_data,
+    actor="agent-1",
+    rationale="Updated Go version from 1.21 to 1.22",
+)
+```
+
+### Fork
+
+Create a conditional variant:
+
+```python
+forked = client.fork(
+    source_id=source_record_id,
+    forked_record=forked_record_data,
+    actor="agent-1",
+    rationale="Different configuration for dev environment",
+)
+```
+
+### Retract
+
+Soft-delete a record:
+
+```python
+client.retract(
+    record_id=record_id,
+    actor="agent-1",
+    rationale="No longer accurate",
+)
+```
+
+### Merge
+
+Consolidate duplicate records:
+
+```python
+merged = client.merge(
+    record_ids=[record_id1, record_id2, record_id3],
+    merged_record=merged_record_data,
+    actor="agent-1",
+    rationale="Consolidating duplicate observations",
+)
+```
+
+### Contest
+
+Mark conflicting evidence:
+
+```python
+client.contest(
+    record_id=record_id,
+    contesting_ref=conflicting_record_id,
+    actor="agent-1",
+    rationale="New evidence contradicts this fact",
+)
+```
+
+## Reinforcement
+
+### Reinforce
+
+Boost a useful record's salience:
+
+```python
+client.reinforce(
+    record_id=record_id,
+    actor="agent-1",
+    rationale="Used successfully in deployment",
+)
+```
+
+### Penalize
+
+Reduce an unhelpful record's salience:
+
+```python
+client.penalize(
+    record_id=record_id,
+    amount=0.2,
+    actor="agent-1",
+    rationale="Not relevant to current task",
+)
+```
+
+## Metrics
+
+Retrieve observability metrics:
+
+```python
+metrics = client.get_metrics()
+
+print(f"Total records: {metrics['total_records']}")
+print(f"Retrieval usefulness: {metrics['retrieval_usefulness']}")
+print(f"Competence success rate: {metrics['competence_success_rate']}")
+```
+
+## LLM Integration Pattern
+
+Integrate Membrane with OpenAI or compatible LLM providers:
+
+```python
+import os
+from openai import OpenAI
+from membrane import MembraneClient, Sensitivity, TrustContext
+
+# Initialize clients
+memory = MembraneClient(
+    "localhost:9090",
+    api_key=os.getenv("MEMBRANE_API_KEY"),
+)
+
+llm = OpenAI(
+    api_key=os.getenv("LLM_API_KEY"),
+    # For OpenRouter or other OpenAI-compatible providers:
+    # base_url="https://openrouter.ai/api/v1",
+)
+
+# Retrieve relevant memories
+records = memory.retrieve(
+    "how should I handle this incident?",
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.MEDIUM,
+        authenticated=True,
+        actor_id="incident-agent",
+        scopes=["prod"],
+    ),
+    memory_types=["semantic", "competence", "working"],
+    limit=10,
+)
+
+# Build context from memories
+import json
+memory_context = "\n".join(json.dumps(r.to_dict()) for r in records)
+
+# Generate completion with memory context
+completion = llm.chat.completions.create(
+    model="gpt-5.2",
+    messages=[
+        {
+            "role": "system",
+            "content": "Use the memory context as evidence. Cite record ids.",
+        },
+        {
+            "role": "user",
+            "content": f"Incident task:\n...\n\nMemory:\n{memory_context}",
+        },
+    ],
+)
+
+print(completion.choices[0].message.content)
+memory.close()
+```
+
+### Full Agent Loop
+
+```python
+import os
+import json
+from openai import OpenAI
+from membrane import MembraneClient, Sensitivity, TrustContext
+
+memory = MembraneClient("localhost:9090", api_key=os.getenv("MEMBRANE_API_KEY"))
+llm = OpenAI(
+    api_key=os.getenv("LLM_API_KEY"),
+    # OpenAI-compatible providers are supported:
+    # base_url="https://openrouter.ai/api/v1",
+)
+
+# Step 1: Retrieve relevant memories
+records = memory.retrieve(
+    "plan a safe database migration",
+    trust=TrustContext(
+        max_sensitivity=Sensitivity.MEDIUM,
+        authenticated=True,
+        actor_id="planner-agent",
+        scopes=["project-acme"],
+    ),
+    memory_types=["semantic", "competence", "working"],
+    limit=12,
+)
+
+# Step 2: Build context
+context = "\n".join(json.dumps(r.to_dict()) for r in records)
+
+# Step 3: Generate plan with LLM
+completion = llm.chat.completions.create(
+    model="gpt-5.2",
+    messages=[
+        {"role": "system", "content": "Use memory context as evidence. Cite record ids."},
+        {"role": "user", "content": f"Task: plan migration\n\nMemory:\n{context}"},
+    ],
+)
+
+answer = completion.choices[0].message.content or ""
+
+# Step 4: Ingest the plan as a new event
+plan_record = memory.ingest_event(
+    event_kind="llm_plan",
+    ref="migration-task-42",
+    source="planner-agent",
+    summary=answer[:500],
+    tags=["llm", "plan", "migration"],
+    scope="project-acme",
+)
+
+# Step 5: Reinforce the plan if successful
+memory.reinforce(plan_record.id, "planner-agent", "plan used successfully")
+
+memory.close()
+```
+
+## Error Handling
+
+Handle gRPC errors:
+
+```python
+import grpc
+
+try:
+    record = client.retrieve_by_id("invalid-id")
+except grpc.RpcError as e:
+    print(f"gRPC error: {e.code()} - {e.details()}")
+```
+
+## API Reference
+
+### Ingestion Methods
+
+| Method | Description |
+|--------|-------------|
+| `ingest_event(event_kind, ref, ...)` | Ingest a raw event |
+| `ingest_tool_output(tool_name, ...)` | Ingest tool invocation output |
+| `ingest_observation(subject, predicate, obj, ...)` | Ingest a semantic triple |
+| `ingest_outcome(target_record_id, outcome_status, ...)` | Attach outcome to existing record |
+| `ingest_working_state(thread_id, state, ...)` | Ingest working memory snapshot |
+
+### Retrieval Methods
+
+| Method | Description |
+|--------|-------------|
+| `retrieve(task_descriptor, ...)` | Retrieve relevant memories (returns records only) |
+| `retrieve_with_selection(task_descriptor, ...)` | Retrieve memories with selection metadata |
+| `retrieve_by_id(record_id, ...)` | Retrieve single record by ID |
+
+### Revision Methods
+
+| Method | Description |
+|--------|-------------|
+| `supersede(old_id, new_record, actor, rationale)` | Replace record with new version |
+| `fork(source_id, forked_record, actor, rationale)` | Create conditional variant |
+| `retract(record_id, actor, rationale)` | Soft-delete record |
+| `merge(record_ids, merged_record, actor, rationale)` | Merge multiple records |
+| `contest(record_id, contesting_ref, actor, rationale)` | Mark record as contested |
+
+### Reinforcement Methods
+
+| Method | Description |
+|--------|-------------|
+| `reinforce(record_id, actor, rationale)` | Boost record salience |
+| `penalize(record_id, amount, actor, rationale)` | Reduce record salience |
+
+### Metrics
+
+| Method | Description |
+|--------|-------------|
+| `get_metrics()` | Retrieve observability metrics snapshot |
+
+## Development
+
+```bash
+cd clients/python
+python -m pip install -e ".[dev]"
+python -m pytest tests/
+```
+
+## Next Steps
+
+- Explore [LLM Integration Patterns](/guides/llm-integration)
+- Learn about [Memory Types](/concepts/memory-types)
+- Review [Security Best Practices](/guides/security)

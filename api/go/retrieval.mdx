@@ -1,0 +1,272 @@
+---
+title: Retrieval
+description: Types for layered memory retrieval with trust context
+---
+
+## Overview
+
+The `retrieval` package implements layered memory retrieval as specified in RFC 15.8, with trust-gated access control and multi-solution selection.
+
+## RetrieveRequest
+
+Specifies parameters for a layered retrieval query.
+
+```go
+type RetrieveRequest struct {
+	// TaskDescriptor describes the current task for contextual retrieval.
+	TaskDescriptor string
+
+	// Trust is the trust context that gates what records can be returned.
+	Trust *TrustContext
+
+	// MemoryTypes optionally restricts retrieval to specific memory types.
+	// If empty, all types are queried in layered order.
+	MemoryTypes []schema.MemoryType
+
+	// MinSalience filters out records below this salience threshold.
+	MinSalience float64
+
+	// Limit caps the total number of returned records. 0 means no limit.
+	Limit int
+}
+```
+
+### Example
+
+```go
+resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+    TaskDescriptor: "fix build error",
+    Trust: &retrieval.TrustContext{
+        MaxSensitivity: schema.SensitivityMedium,
+        Authenticated:  true,
+        ActorID:        "agent-1",
+        Scopes:         []string{"project-acme"},
+    },
+    MemoryTypes: []schema.MemoryType{
+        schema.MemoryTypeCompetence,
+        schema.MemoryTypeSemantic,
+    },
+    MinSalience: 0.3,
+    Limit:       10,
+})
+if err != nil {
+    log.Fatal(err)
+}
+
+for _, record := range resp.Records {
+    fmt.Printf("Found: %s (type=%s, salience=%.2f)\n",
+        record.ID, record.Type, record.Salience)
+}
+```
+
+## RetrieveResponse
+
+Contains the results of a layered retrieval query.
+
+```go
+type RetrieveResponse struct {
+	// Records contains the filtered, sorted, and limited results.
+	Records []*schema.MemoryRecord
+
+	// Selection is non-nil when competence or plan_graph candidates were
+	// evaluated through the multi-solution selector (RFC 15A.11).
+	Selection *SelectionResult
+}
+```
+
+## TrustContext
+
+Gates retrieval based on the requester's trust attributes.
+
+```go
+type TrustContext struct {
+	// MaxSensitivity is the maximum sensitivity level the requester is allowed to access.
+	MaxSensitivity schema.Sensitivity
+
+	// Authenticated indicates whether the requester has been authenticated.
+	Authenticated bool
+
+	// ActorID identifies who is making the retrieval request.
+	ActorID string
+
+	// Scopes lists the scopes the requester is allowed to access.
+	// An empty slice means all scopes are allowed.
+	Scopes []string
+}
+```
+
+### NewTrustContext
+
+```go
+func NewTrustContext(maxSensitivity schema.Sensitivity, authenticated bool, actorID string, scopes []string) *TrustContext
+```
+
+Creates a new TrustContext with the given parameters.
+
+### Allows
+
+```go
+func (tc *TrustContext) Allows(record *schema.MemoryRecord) bool
+```
+
+Checks whether the given record is accessible under this trust context. A record is allowed if:
+- Its sensitivity level does not exceed the trust context's MaxSensitivity
+- Its scope matches one of the allowed scopes (or the trust context has no scope restrictions)
+
+### AllowsRedacted
+
+```go
+func (tc *TrustContext) AllowsRedacted(record *schema.MemoryRecord) bool
+```
+
+Returns true if the record's sensitivity is exactly one level above the trust context's maximum, allowing a redacted view. Records at this level are visible as metadata but with sensitive content removed.
+
+### Example
+
+```go
+trust := retrieval.NewTrustContext(
+    schema.SensitivityMedium,
+    true,
+    "agent-1",
+    []string{"project-acme"},
+)
+
+// Check if a record can be accessed
+if trust.Allows(record) {
+    fmt.Println("Record accessible")
+} else if trust.AllowsRedacted(record) {
+    fmt.Println("Record available in redacted form")
+} else {
+    fmt.Println("Access denied")
+}
+```
+
+## SelectionResult
+
+Holds the outcome of multi-solution selection per RFC 15A.11.
+
+```go
+type SelectionResult struct {
+	// Selected contains the ranked candidates in descending score order.
+	Selected []*schema.MemoryRecord
+
+	// Confidence is the selection confidence in [0, 1].
+	// Computed as the score gap between the best and second-best candidate,
+	// normalized by the best score.
+	Confidence float64
+
+	// NeedsMore is true when confidence falls below the selector's threshold,
+	// indicating that additional information or user disambiguation is needed.
+	NeedsMore bool
+}
+```
+
+## Layered Retrieval Order
+
+Retrieval follows the canonical layered order as specified in RFC 15.8:
+
+1. **Working** - Current task state
+2. **Semantic** - Stable facts and preferences
+3. **Competence** - Procedural knowledge
+4. **Plan Graph** - Reusable solution structures
+5. **Episodic** - Raw experience
+
+Records are filtered by trust context and salience, then sorted by salience descending.
+
+## Complete Retrieval Example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/GustyCube/membrane/pkg/membrane"
+    "github.com/GustyCube/membrane/pkg/retrieval"
+    "github.com/GustyCube/membrane/pkg/schema"
+)
+
+func main() {
+    cfg := membrane.DefaultConfig()
+    m, _ := membrane.New(cfg)
+    defer m.Stop()
+
+    ctx := context.Background()
+    m.Start(ctx)
+
+    // Create a trust context
+    trust := retrieval.NewTrustContext(
+        schema.SensitivityMedium,
+        true,
+        "build-agent",
+        []string{"project-acme"},
+    )
+
+    // Perform layered retrieval
+    resp, err := m.Retrieve(ctx, &retrieval.RetrieveRequest{
+        TaskDescriptor: "debug linker error",
+        Trust:          trust,
+        MemoryTypes: []schema.MemoryType{
+            schema.MemoryTypeCompetence,
+            schema.MemoryTypeSemantic,
+            schema.MemoryTypeEpisodic,
+        },
+        MinSalience: 0.2,
+        Limit:       15,
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Printf("Retrieved %d records\n", len(resp.Records))
+
+    // Check if multi-solution selection was performed
+    if resp.Selection != nil {
+        fmt.Printf("Selection confidence: %.2f\n", resp.Selection.Confidence)
+        if resp.Selection.NeedsMore {
+            fmt.Println("Low confidence - may need more information")
+        }
+    }
+
+    // Process retrieved records
+    for i, record := range resp.Records {
+        fmt.Printf("%d. %s (type=%s, salience=%.2f, confidence=%.2f)\n",
+            i+1, record.ID, record.Type, record.Salience, record.Confidence)
+
+        // Check access level
+        if !trust.Allows(record) {
+            fmt.Println("   [REDACTED]")
+            continue
+        }
+
+        // Display record metadata
+        fmt.Printf("   Tags: %v\n", record.Tags)
+        fmt.Printf("   Created: %s\n", record.CreatedAt.Format("2006-01-02"))
+    }
+
+    // Retrieve a specific record by ID
+    recordID := "some-record-id"
+    specificRecord, err := m.RetrieveByID(ctx, recordID, trust)
+    if err != nil {
+        fmt.Printf("Could not retrieve record %s: %v\n", recordID, err)
+    } else {
+        fmt.Printf("Retrieved specific record: %s\n", specificRecord.ID)
+    }
+}
+```
+
+## Sensitivity Levels
+
+The trust context enforces sensitivity-based access control:
+
+| Sensitivity | Numeric Level | Description |
+|-------------|---------------|-------------|
+| `public`    | 0             | Freely accessible |
+| `low`       | 1             | Minimal restrictions |
+| `medium`    | 2             | Moderate access control |
+| `high`      | 3             | Elevated trust required |
+| `hyper`     | 4             | Maximum protection |
+
+Records with sensitivity exceeding the trust context's `MaxSensitivity` are filtered out. Records exactly one level above may be returned in redacted form (metadata only, no payload).

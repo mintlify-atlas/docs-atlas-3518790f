@@ -1,0 +1,1087 @@
+---
+title: "Python Client"
+description: "Complete API reference for the Membrane Python client"
+---
+
+## Installation
+
+Install the Membrane Python client using pip:
+
+```bash
+pip install membrane-client
+```
+
+Requires Python 3.10 or higher.
+
+## Quick Start
+
+```python
+from membrane import MembraneClient, Sensitivity
+
+client = MembraneClient("localhost:9090")
+
+# Ingest an event
+record = client.ingest_event(
+    event_kind="file_edit",
+    ref="src/main.py",
+    summary="Updated main entry point",
+    sensitivity=Sensitivity.LOW
+)
+
+# Retrieve relevant memories
+memories = client.retrieve(
+    "What files have been edited recently?",
+    limit=10
+)
+
+client.close()
+```
+
+## MembraneClient
+
+### Constructor
+
+```python
+MembraneClient(
+    addr: str = "localhost:9090",
+    *,
+    tls: bool = False,
+    tls_ca_cert: str | None = None,
+    api_key: str | None = None,
+    timeout: float | None = None
+)
+```
+
+Create a new client instance.
+
+<ParamField path="addr" type="str" default="localhost:9090">
+  gRPC server address in `host:port` format.
+</ParamField>
+
+<ParamField path="tls" type="bool" default={false}>
+  Enable TLS transport. When `True` without `tls_ca_cert`, uses system root certificates.
+</ParamField>
+
+<ParamField path="tls_ca_cert" type="str">
+  Path to PEM-encoded CA certificate file for server verification. Implies `tls=True`.
+</ParamField>
+
+<ParamField path="api_key" type="str">
+  Optional Bearer token for server authentication.
+</ParamField>
+
+<ParamField path="timeout" type="float">
+  Default timeout in seconds for all RPC calls. `None` means no timeout.
+</ParamField>
+
+### Example: Secure Connection
+
+```python
+client = MembraneClient(
+    "membrane.example.com:443",
+    tls=True,
+    api_key="your-api-key",
+    timeout=10.0
+)
+```
+
+### Context Manager Support
+
+The client supports the context manager protocol:
+
+```python
+with MembraneClient("localhost:9090") as client:
+    record = client.ingest_event(
+        event_kind="test",
+        ref="example"
+    )
+    # Client automatically closed on exit
+```
+
+## Ingestion Methods
+
+### ingest_event
+
+```python
+ingest_event(
+    event_kind: str,
+    ref: str,
+    *,
+    summary: str = "",
+    sensitivity: Sensitivity | str = Sensitivity.LOW,
+    source: str = "python-client",
+    tags: Sequence[str] | None = None,
+    scope: str = "",
+    timestamp: str | None = None
+) -> MemoryRecord
+```
+
+Ingest an event into the memory substrate.
+
+<ParamField path="event_kind" type="str" required>
+  Type of event (e.g., `"file_edit"`, `"error"`, `"user_action"`).
+</ParamField>
+
+<ParamField path="ref" type="str" required>
+  Reference identifier for the event source.
+</ParamField>
+
+<ParamField path="summary" type="str" default="">
+  Human-readable summary of the event.
+</ParamField>
+
+<ParamField path="sensitivity" type="Sensitivity | str" default="Sensitivity.LOW">
+  Sensitivity classification: `Sensitivity.PUBLIC`, `LOW`, `MEDIUM`, `HIGH`, or `HYPER`.
+</ParamField>
+
+<ParamField path="source" type="str" default="python-client">
+  Source identifier for provenance tracking.
+</ParamField>
+
+<ParamField path="tags" type="Sequence[str]">
+  Optional tags for categorization.
+</ParamField>
+
+<ParamField path="scope" type="str" default="">
+  Visibility scope for the record.
+</ParamField>
+
+<ParamField path="timestamp" type="str">
+  RFC 3339 timestamp; defaults to current time.
+</ParamField>
+
+#### Example
+
+```python
+from membrane import Sensitivity
+
+record = client.ingest_event(
+    event_kind="deployment",
+    ref="prod-v2.3.1",
+    summary="Deployed version 2.3.1 to production",
+    sensitivity=Sensitivity.MEDIUM,
+    tags=["production", "deployment"],
+    scope="engineering"
+)
+```
+
+### ingest_tool_output
+
+```python
+ingest_tool_output(
+    tool_name: str,
+    *,
+    args: dict[str, Any] | None = None,
+    result: Any = None,
+    sensitivity: Sensitivity | str = Sensitivity.LOW,
+    source: str = "python-client",
+    depends_on: Sequence[str] | None = None,
+    tags: Sequence[str] | None = None,
+    scope: str = "",
+    timestamp: str | None = None
+) -> MemoryRecord
+```
+
+Ingest tool execution output into the memory substrate.
+
+<ParamField path="tool_name" type="str" required>
+  Name of the tool that was executed.
+</ParamField>
+
+<ParamField path="args" type="dict[str, Any]">
+  Arguments passed to the tool (JSON-serializable).
+</ParamField>
+
+<ParamField path="result" type="Any">
+  Result produced by the tool (JSON-serializable).
+</ParamField>
+
+<ParamField path="sensitivity" type="Sensitivity | str" default="Sensitivity.LOW">
+  Sensitivity classification.
+</ParamField>
+
+<ParamField path="source" type="str" default="python-client">
+  Source identifier for provenance.
+</ParamField>
+
+<ParamField path="depends_on" type="Sequence[str]">
+  IDs of records this output depends on.
+</ParamField>
+
+<ParamField path="tags" type="Sequence[str]">
+  Optional tags for categorization.
+</ParamField>
+
+<ParamField path="scope" type="str" default="">
+  Visibility scope.
+</ParamField>
+
+<ParamField path="timestamp" type="str">
+  RFC 3339 timestamp; defaults to current time.
+</ParamField>
+
+#### Example
+
+```python
+record = client.ingest_tool_output(
+    tool_name="file_search",
+    args={"pattern": "*.py", "directory": "src"},
+    result=["src/main.py", "src/utils.py"],
+    tags=["search", "file-operation"]
+)
+```
+
+### ingest_observation
+
+```python
+ingest_observation(
+    subject: str,
+    predicate: str,
+    obj: Any,
+    *,
+    sensitivity: Sensitivity | str = Sensitivity.LOW,
+    source: str = "python-client",
+    tags: Sequence[str] | None = None,
+    scope: str = "",
+    timestamp: str | None = None
+) -> MemoryRecord
+```
+
+Ingest a subject-predicate-object triple observation.
+
+<ParamField path="subject" type="str" required>
+  The subject of the observation.
+</ParamField>
+
+<ParamField path="predicate" type="str" required>
+  The relationship or property being observed.
+</ParamField>
+
+<ParamField path="obj" type="Any" required>
+  The object of the observation (JSON-serializable).
+</ParamField>
+
+<ParamField path="sensitivity" type="Sensitivity | str" default="Sensitivity.LOW">
+  Sensitivity classification.
+</ParamField>
+
+<ParamField path="source" type="str" default="python-client">
+  Source identifier for provenance.
+</ParamField>
+
+<ParamField path="tags" type="Sequence[str]">
+  Optional tags for categorization.
+</ParamField>
+
+<ParamField path="scope" type="str" default="">
+  Visibility scope.
+</ParamField>
+
+<ParamField path="timestamp" type="str">
+  RFC 3339 timestamp; defaults to current time.
+</ParamField>
+
+#### Example
+
+```python
+client.ingest_observation(
+    subject="user_123",
+    predicate="prefers_language",
+    obj="python",
+    tags=["user-preferences"]
+)
+```
+
+### ingest_outcome
+
+```python
+ingest_outcome(
+    target_record_id: str,
+    outcome_status: OutcomeStatus | str,
+    *,
+    source: str = "python-client",
+    timestamp: str | None = None
+) -> MemoryRecord
+```
+
+Record an outcome for a previously ingested event.
+
+<ParamField path="target_record_id" type="str" required>
+  ID of the record to attach the outcome to.
+</ParamField>
+
+<ParamField path="outcome_status" type="OutcomeStatus | str" required>
+  Result status: `OutcomeStatus.SUCCESS`, `FAILURE`, or `PARTIAL`.
+</ParamField>
+
+<ParamField path="source" type="str" default="python-client">
+  Source identifier for provenance.
+</ParamField>
+
+<ParamField path="timestamp" type="str">
+  RFC 3339 timestamp; defaults to current time.
+</ParamField>
+
+#### Example
+
+```python
+from membrane import OutcomeStatus
+
+client.ingest_outcome(
+    target_record_id=record_id,
+    outcome_status=OutcomeStatus.SUCCESS
+)
+```
+
+### ingest_working_state
+
+```python
+ingest_working_state(
+    thread_id: str,
+    state: str,
+    *,
+    next_actions: Sequence[str] | None = None,
+    open_questions: Sequence[str] | None = None,
+    context_summary: str = "",
+    active_constraints: Sequence[dict[str, Any]] | None = None,
+    sensitivity: Sensitivity | str = Sensitivity.LOW,
+    source: str = "python-client",
+    tags: Sequence[str] | None = None,
+    scope: str = "",
+    timestamp: str | None = None
+) -> MemoryRecord
+```
+
+Ingest a working memory state snapshot for a task thread.
+
+<ParamField path="thread_id" type="str" required>
+  Identifier for the task thread.
+</ParamField>
+
+<ParamField path="state" type="str" required>
+  Current task state (e.g., `"planning"`, `"executing"`, `"blocked"`).
+</ParamField>
+
+<ParamField path="next_actions" type="Sequence[str]">
+  Planned next steps.
+</ParamField>
+
+<ParamField path="open_questions" type="Sequence[str]">
+  Unresolved questions.
+</ParamField>
+
+<ParamField path="context_summary" type="str" default="">
+  Human-readable context summary.
+</ParamField>
+
+<ParamField path="active_constraints" type="Sequence[dict[str, Any]]">
+  Active constraints as JSON-serializable dictionaries.
+</ParamField>
+
+<ParamField path="sensitivity" type="Sensitivity | str" default="Sensitivity.LOW">
+  Sensitivity classification.
+</ParamField>
+
+<ParamField path="source" type="str" default="python-client">
+  Source identifier for provenance.
+</ParamField>
+
+<ParamField path="tags" type="Sequence[str]">
+  Optional tags for categorization.
+</ParamField>
+
+<ParamField path="scope" type="str" default="">
+  Visibility scope.
+</ParamField>
+
+<ParamField path="timestamp" type="str">
+  RFC 3339 timestamp; defaults to current time.
+</ParamField>
+
+#### Example
+
+```python
+client.ingest_working_state(
+    thread_id="thread-42",
+    state="executing",
+    next_actions=["run tests", "deploy to staging"],
+    open_questions=["Which API version to use?"],
+    context_summary="Implementing new authentication flow"
+)
+```
+
+## Retrieval Methods
+
+### retrieve
+
+```python
+retrieve(
+    task_descriptor: str,
+    *,
+    trust: TrustContext | None = None,
+    memory_types: Sequence[MemoryType | str] | None = None,
+    min_salience: float = 0.0,
+    limit: int = 10
+) -> list[MemoryRecord]
+```
+
+Retrieve memories relevant to a task descriptor.
+
+<ParamField path="task_descriptor" type="str" required>
+  Natural-language description of the current task.
+</ParamField>
+
+<ParamField path="trust" type="TrustContext">
+  Trust context controlling access permissions. Defaults to minimal context with `Sensitivity.LOW`.
+</ParamField>
+
+<ParamField path="memory_types" type="Sequence[MemoryType | str]">
+  Filter for specific memory types: `MemoryType.EPISODIC`, `WORKING`, `SEMANTIC`, `COMPETENCE`, or `PLAN_GRAPH`.
+</ParamField>
+
+<ParamField path="min_salience" type="float" default={0.0}>
+  Minimum salience threshold (0.0 to 1.0).
+</ParamField>
+
+<ParamField path="limit" type="int" default={10}>
+  Maximum number of records to return.
+</ParamField>
+
+#### Example
+
+```python
+from membrane import TrustContext, MemoryType, Sensitivity
+
+trust = TrustContext(
+    max_sensitivity=Sensitivity.MEDIUM,
+    authenticated=True,
+    actor_id="agent-1"
+)
+
+memories = client.retrieve(
+    "Fix the authentication bug in the login flow",
+    trust=trust,
+    memory_types=[MemoryType.EPISODIC, MemoryType.SEMANTIC],
+    min_salience=0.3,
+    limit=5
+)
+```
+
+### retrieve_with_selection
+
+```python
+retrieve_with_selection(
+    task_descriptor: str,
+    *,
+    trust: TrustContext | None = None,
+    memory_types: Sequence[MemoryType | str] | None = None,
+    min_salience: float = 0.0,
+    limit: int = 10
+) -> RetrieveResult
+```
+
+Retrieve memories with additional selection metadata.
+
+<ParamField path="task_descriptor" type="str" required>
+  Natural-language description of the current task.
+</ParamField>
+
+<ParamField path="trust" type="TrustContext">
+  Trust context controlling access.
+</ParamField>
+
+<ParamField path="memory_types" type="Sequence[MemoryType | str]">
+  Filter for specific memory types.
+</ParamField>
+
+<ParamField path="min_salience" type="float" default={0.0}>
+  Minimum salience threshold.
+</ParamField>
+
+<ParamField path="limit" type="int" default={10}>
+  Maximum number of records.
+</ParamField>
+
+Returns a `RetrieveResult` object containing:
+- `records`: List of `MemoryRecord` instances
+- `selection`: Optional `SelectionResult` with confidence metrics
+
+#### Example
+
+```python
+result = client.retrieve_with_selection(
+    "Find recent deployment errors",
+    limit=10
+)
+
+print(f"Found {len(result.records)} records")
+if result.selection:
+    print(f"Selection confidence: {result.selection.confidence}")
+```
+
+### retrieve_by_id
+
+```python
+retrieve_by_id(
+    record_id: str,
+    *,
+    trust: TrustContext | None = None
+) -> MemoryRecord
+```
+
+Retrieve a single memory record by its ID.
+
+<ParamField path="record_id" type="str" required>
+  The UUID of the record.
+</ParamField>
+
+<ParamField path="trust" type="TrustContext">
+  Trust context controlling access. Defaults to minimal context.
+</ParamField>
+
+#### Example
+
+```python
+record = client.retrieve_by_id(
+    "550e8400-e29b-41d4-a716-446655440000"
+)
+```
+
+## Revision Methods
+
+### supersede
+
+```python
+supersede(
+    old_id: str,
+    new_record: dict[str, Any] | MemoryRecord,
+    actor: str,
+    rationale: str
+) -> MemoryRecord
+```
+
+Supersede an existing record with a new version.
+
+<ParamField path="old_id" type="str" required>
+  ID of the record to supersede.
+</ParamField>
+
+<ParamField path="new_record" type="dict[str, Any] | MemoryRecord" required>
+  The replacement record (dict or `MemoryRecord` instance).
+</ParamField>
+
+<ParamField path="actor" type="str" required>
+  Identifier of the actor performing the revision.
+</ParamField>
+
+<ParamField path="rationale" type="str" required>
+  Human-readable reason for the supersession.
+</ParamField>
+
+#### Example
+
+```python
+updated = client.supersede(
+    old_id=old_record_id,
+    new_record={**old_record.to_dict(), "payload": {"updated": True}},
+    actor="agent-1",
+    rationale="Corrected metadata based on new information"
+)
+```
+
+### fork
+
+```python
+fork(
+    source_id: str,
+    forked_record: dict[str, Any] | MemoryRecord,
+    actor: str,
+    rationale: str
+) -> MemoryRecord
+```
+
+Fork a record into a conditional variant.
+
+<ParamField path="source_id" type="str" required>
+  ID of the record to fork from.
+</ParamField>
+
+<ParamField path="forked_record" type="dict[str, Any] | MemoryRecord" required>
+  The forked variant.
+</ParamField>
+
+<ParamField path="actor" type="str" required>
+  Identifier of the actor performing the fork.
+</ParamField>
+
+<ParamField path="rationale" type="str" required>
+  Human-readable reason for the fork.
+</ParamField>
+
+### retract
+
+```python
+retract(
+    record_id: str,
+    actor: str,
+    rationale: str
+) -> None
+```
+
+Retract (soft-delete) a record.
+
+<ParamField path="record_id" type="str" required>
+  ID of the record to retract.
+</ParamField>
+
+<ParamField path="actor" type="str" required>
+  Identifier of the actor performing the retraction.
+</ParamField>
+
+<ParamField path="rationale" type="str" required>
+  Human-readable reason for the retraction.
+</ParamField>
+
+#### Example
+
+```python
+client.retract(
+    record_id=record_id,
+    actor="agent-1",
+    rationale="Record contained incorrect information"
+)
+```
+
+### merge
+
+```python
+merge(
+    record_ids: Sequence[str],
+    merged_record: dict[str, Any] | MemoryRecord,
+    actor: str,
+    rationale: str
+) -> MemoryRecord
+```
+
+Merge multiple records into a single record.
+
+<ParamField path="record_ids" type="Sequence[str]" required>
+  IDs of the records to merge.
+</ParamField>
+
+<ParamField path="merged_record" type="dict[str, Any] | MemoryRecord" required>
+  The merged result.
+</ParamField>
+
+<ParamField path="actor" type="str" required>
+  Identifier of the actor performing the merge.
+</ParamField>
+
+<ParamField path="rationale" type="str" required>
+  Human-readable reason for the merge.
+</ParamField>
+
+### contest
+
+```python
+contest(
+    record_id: str,
+    contesting_ref: str,
+    actor: str,
+    rationale: str
+) -> None
+```
+
+Mark a record as contested due to conflicting evidence.
+
+<ParamField path="record_id" type="str" required>
+  ID of the record to contest.
+</ParamField>
+
+<ParamField path="contesting_ref" type="str" required>
+  Reference to the conflicting evidence.
+</ParamField>
+
+<ParamField path="actor" type="str" required>
+  Identifier of the actor contesting the record.
+</ParamField>
+
+<ParamField path="rationale" type="str" required>
+  Human-readable reason for contesting.
+</ParamField>
+
+## Reinforcement Methods
+
+### reinforce
+
+```python
+reinforce(
+    record_id: str,
+    actor: str,
+    rationale: str
+) -> None
+```
+
+Reinforce a record, boosting its salience.
+
+<ParamField path="record_id" type="str" required>
+  ID of the record to reinforce.
+</ParamField>
+
+<ParamField path="actor" type="str" required>
+  Identifier of the actor performing the reinforcement.
+</ParamField>
+
+<ParamField path="rationale" type="str" required>
+  Human-readable reason for the reinforcement.
+</ParamField>
+
+#### Example
+
+```python
+client.reinforce(
+    record_id=record_id,
+    actor="agent-1",
+    rationale="This information was crucial for solving the task"
+)
+```
+
+### penalize
+
+```python
+penalize(
+    record_id: str,
+    amount: float,
+    actor: str,
+    rationale: str
+) -> None
+```
+
+Penalize a record, reducing its salience.
+
+<ParamField path="record_id" type="str" required>
+  ID of the record to penalize.
+</ParamField>
+
+<ParamField path="amount" type="float" required>
+  Penalty amount to subtract from salience.
+</ParamField>
+
+<ParamField path="actor" type="str" required>
+  Identifier of the actor applying the penalty.
+</ParamField>
+
+<ParamField path="rationale" type="str" required>
+  Human-readable reason for the penalty.
+</ParamField>
+
+#### Example
+
+```python
+client.penalize(
+    record_id=record_id,
+    amount=0.2,
+    actor="agent-1",
+    rationale="Information was misleading"
+)
+```
+
+## Metrics
+
+### get_metrics
+
+```python
+get_metrics() -> dict[str, Any]
+```
+
+Retrieve current metrics from the Membrane daemon.
+
+Returns a dictionary containing the metrics snapshot.
+
+#### Example
+
+```python
+metrics = client.get_metrics()
+print(f"Total records: {metrics['total_records']}")
+```
+
+## Lifecycle
+
+### close
+
+```python
+close() -> None
+```
+
+Close the underlying gRPC channel and release resources.
+
+```python
+client.close()
+```
+
+## Type Definitions
+
+### MemoryRecord
+
+The atomic unit of storage in Membrane.
+
+```python
+@dataclass
+class MemoryRecord:
+    id: str
+    type: MemoryType
+    sensitivity: Sensitivity
+    confidence: float
+    salience: float
+    scope: str
+    tags: list[str]
+    created_at: str
+    updated_at: str
+    lifecycle: Lifecycle | None
+    provenance: Provenance | None
+    relations: list[Relation]
+    payload: Any
+    audit_log: list[AuditEntry]
+```
+
+The `MemoryRecord` class provides:
+- `from_dict(data: dict[str, Any]) -> MemoryRecord`: Construct from JSON
+- `to_dict() -> dict[str, Any]`: Serialize to JSON
+
+### TrustContext
+
+Controls access permissions during retrieval.
+
+```python
+@dataclass
+class TrustContext:
+    max_sensitivity: Sensitivity = Sensitivity.LOW
+    authenticated: bool = False
+    actor_id: str = ""
+    scopes: list[str] = field(default_factory=list)
+```
+
+#### Example
+
+```python
+from membrane import TrustContext, Sensitivity
+
+trust = TrustContext(
+    max_sensitivity=Sensitivity.MEDIUM,
+    authenticated=True,
+    actor_id="agent-1",
+    scopes=["engineering", "production"]
+)
+```
+
+### RetrieveResult
+
+Result from `retrieve_with_selection()`.
+
+```python
+@dataclass
+class RetrieveResult:
+    records: list[MemoryRecord]
+    selection: SelectionResult | None
+```
+
+### SelectionResult
+
+Selector metadata with confidence scores.
+
+```python
+@dataclass
+class SelectionResult:
+    selected: list[MemoryRecord]
+    confidence: float
+    needs_more: bool
+```
+
+### Enums
+
+#### MemoryType
+
+```python
+class MemoryType(str, Enum):
+    EPISODIC = "episodic"
+    WORKING = "working"
+    SEMANTIC = "semantic"
+    COMPETENCE = "competence"
+    PLAN_GRAPH = "plan_graph"
+```
+
+#### Sensitivity
+
+```python
+class Sensitivity(str, Enum):
+    PUBLIC = "public"
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    HYPER = "hyper"
+```
+
+#### OutcomeStatus
+
+```python
+class OutcomeStatus(str, Enum):
+    SUCCESS = "success"
+    FAILURE = "failure"
+    PARTIAL = "partial"
+```
+
+#### DecayCurve
+
+```python
+class DecayCurve(str, Enum):
+    EXPONENTIAL = "exponential"
+    LINEAR = "linear"
+    CUSTOM = "custom"
+```
+
+#### DeletionPolicy
+
+```python
+class DeletionPolicy(str, Enum):
+    AUTO_PRUNE = "auto_prune"
+    MANUAL_ONLY = "manual_only"
+    NEVER = "never"
+```
+
+#### RevisionStatus
+
+```python
+class RevisionStatus(str, Enum):
+    ACTIVE = "active"
+    CONTESTED = "contested"
+    RETRACTED = "retracted"
+```
+
+#### ValidityMode
+
+```python
+class ValidityMode(str, Enum):
+    GLOBAL = "global"
+    CONDITIONAL = "conditional"
+    TIMEBOXED = "timeboxed"
+```
+
+#### TaskState
+
+```python
+class TaskState(str, Enum):
+    PLANNING = "planning"
+    EXECUTING = "executing"
+    BLOCKED = "blocked"
+    WAITING = "waiting"
+    DONE = "done"
+```
+
+#### AuditAction
+
+```python
+class AuditAction(str, Enum):
+    CREATE = "create"
+    REVISE = "revise"
+    FORK = "fork"
+    MERGE = "merge"
+    DELETE = "delete"
+    REINFORCE = "reinforce"
+    DECAY = "decay"
+```
+
+#### ProvenanceKind
+
+```python
+class ProvenanceKind(str, Enum):
+    EVENT = "event"
+    ARTIFACT = "artifact"
+    TOOL_CALL = "tool_call"
+    OBSERVATION = "observation"
+    OUTCOME = "outcome"
+```
+
+## Error Handling
+
+The client uses gRPC exceptions for error handling:
+
+```python
+import grpc
+
+try:
+    client.ingest_event("test", "ref")
+except grpc.RpcError as e:
+    print(f"gRPC error: {e.code()}")
+    print(f"Details: {e.details()}")
+```
+
+## Complete Example
+
+```python
+from membrane import (
+    MembraneClient,
+    MemoryType,
+    OutcomeStatus,
+    Sensitivity,
+    TrustContext,
+)
+
+# Create client with secure connection
+with MembraneClient(
+    "membrane.example.com:443",
+    tls=True,
+    api_key="your-api-key"
+) as client:
+    # Ingest an event
+    event_record = client.ingest_event(
+        event_kind="deployment",
+        ref="prod-v3.0.0",
+        summary="Deployed new authentication system",
+        sensitivity=Sensitivity.MEDIUM,
+        tags=["production", "auth"]
+    )
+    
+    # Ingest tool output
+    tool_record = client.ingest_tool_output(
+        tool_name="run_tests",
+        args={"suite": "integration"},
+        result={"passed": 42, "failed": 0},
+        depends_on=[event_record.id]
+    )
+    
+    # Record outcome
+    client.ingest_outcome(
+        target_record_id=event_record.id,
+        outcome_status=OutcomeStatus.SUCCESS
+    )
+    
+    # Retrieve relevant memories
+    trust = TrustContext(
+        max_sensitivity=Sensitivity.MEDIUM,
+        authenticated=True,
+        actor_id="admin-1"
+    )
+    
+    memories = client.retrieve(
+        "What happened with the authentication deployment?",
+        trust=trust,
+        memory_types=[MemoryType.EPISODIC],
+        limit=10
+    )
+    
+    for memory in memories:
+        print(f"[{memory.type.value}] {memory.id}")
+        print(f"  Salience: {memory.salience}")
+        print(f"  Payload: {memory.payload}")
+    
+    # Reinforce important memories
+    client.reinforce(
+        record_id=event_record.id,
+        actor="admin-1",
+        rationale="Critical deployment milestone"
+    )
+    
+    # Get metrics
+    metrics = client.get_metrics()
+    print(f"Total records: {metrics.get('total_records', 'N/A')}")
+```
